@@ -188,11 +188,14 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       the scorer injects the entity's current annotations into window evidence
       before gating, so later use cases read them (`entity_annotations`)
 
-### 3.5 — web_recon consumes suppression
-- [ ] `web_recon` gate reads the crawler annotation → **suppress verified polite
-      crawlers, down-weight borderline** — recorded visibly in the alert
-- [ ] No change to `web_recon`'s own thresholds (still learned); suppression is a
-      new *input*, not a new threshold
+### 3.5 — web_recon consumes suppression *(done)*
+- [x] `web_recon` consumes the crawler annotation → **suppress verified polite
+      crawlers** (published-range identity + robots.txt fetched), **down-weight
+      borderline** one severity band — recorded visibly on the alert document,
+      in the shadow/score log, and in a per-slug `*_suppressed.ndjson` (D-022)
+- [x] No change to `web_recon`'s own thresholds (still learned); the gate still
+      fires and is recorded — suppression happens at the fusion/delivery layer
+      (`UseCase.suppression`), a new *input*, not a new threshold
 
 ### 3.6 — Validate on elkcc
 - [ ] Train + shadow both detectors on live nginx; measure `web_recon` fire-rate

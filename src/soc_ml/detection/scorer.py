@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from soc_ml.core.contracts import Alert, EntityKey
+from soc_ml.core.contracts import Alert, EntityKey, Severity
 from soc_ml.core.plugins import UseCase
 from soc_ml.detection.annotations import EntityAnnotations
 from soc_ml.explain.context import narrative, top_features
@@ -27,6 +27,10 @@ from soc_ml.fusion.severity import severity_score
 from soc_ml.registry.store import ModelBundle
 
 __all__ = ["Scorer", "ScoreResult"]
+
+#: Severity reduction for a down-weighted alert — one band (the bands are
+#: 25-point wide, SPEC_DIGEST §7). A fusion constant, in code like the gates.
+_DOWNWEIGHT_POINTS = 25
 
 
 @dataclass(slots=True)
@@ -57,6 +61,10 @@ class ScoreResult:
             "event_count": self.evidence.get("event_count"),
         }
         row.update({f"{m}_pct": round(p, 5) for m, p in self.per_model.items()})
+        if self.alert is not None and self.alert.suppressed_by:
+            # The before/after measurement lives here: fired stays true,
+            # the suppression is its own visible fact (NFR-09).
+            row["suppressed_by"] = self.alert.suppressed_by
         return row
 
 
@@ -116,6 +124,7 @@ class Scorer:
         )
         if fired:
             out.alert = self._build_alert(x, result, per_model, fused, synthetic)
+            self._apply_suppression(out)
 
         if self.annotations is not None:
             exported = self.usecase.annotate(out)
@@ -126,6 +135,26 @@ class Scorer:
         return out
 
     # ------------------------------------------------------------------ #
+
+    def _apply_suppression(self, out: ScoreResult) -> None:
+        """The fusion 'suppress' stage: after detection, before delivery.
+
+        Detection is already decided (``fired`` never changes here). A
+        suppression withholds delivery; a down-weight lowers severity one
+        band. Both leave their reason on the alert document (NFR-09).
+        """
+        decision = self.usecase.suppression(out.evidence)
+        if decision is None:
+            return
+        kind, reason = decision
+        alert = out.alert
+        if kind == "suppress":
+            alert.suppressed_by = reason
+            alert.delivered = False
+        else:
+            alert.severity_score = max(alert.severity_score - _DOWNWEIGHT_POINTS, 0)
+            alert.severity = Severity.from_score(alert.severity_score)
+            alert.links["downweighted_by"] = reason
 
     def _build_alert(
         self,
@@ -157,5 +186,12 @@ class Scorer:
                 "rule_id": self.usecase_cls.usecase_id,
                 "rule_name": self.usecase_cls.title,
                 "synthetic": synthetic,
+                # The upstream annotation snapshot the delivery decision saw —
+                # audit context for suppress/downweight (NFR-09).
+                **(
+                    {"entity_annotations": result.evidence["entity_annotations"]}
+                    if result.evidence.get("entity_annotations")
+                    else {}
+                ),
             },
         )

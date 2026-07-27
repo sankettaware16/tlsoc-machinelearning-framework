@@ -424,7 +424,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     print(f"alerts        : {s['alerts_delivered']} delivered "
           f"({s['delivered_per_day_per_server']}/day/server, budget "
           f"{s['fp_budget_per_day_per_server']}); {s['alerts_raw']} raw, "
-          f"{s['folded']} folded by dedup")
+          f"{s['folded']} folded by dedup, "
+          f"{s.get('alerts_suppressed', 0)} crawler-suppressed")
     if c["injected"]:
         verdict = "DETECTED" if c["detected"] else "MISSED"
         print(f"canary        : {verdict}  "

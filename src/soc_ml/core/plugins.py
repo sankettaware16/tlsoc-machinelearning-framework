@@ -290,6 +290,19 @@ class UseCase(Plugin):
         """
         return max(calibrated.values())
 
+    def suppression(self, evidence: dict[str, Any]) -> tuple[str, str] | None:
+        """Should a fired alert be suppressed or down-weighted, and why?
+
+        Called only after the gate fired — detection is never touched, which
+        is what keeps "no new thresholds" true: this consumes an upstream
+        signal (``evidence["entity_annotations"]``), it does not re-judge the
+        anomaly. Return ``("suppress", reason)`` to withhold delivery,
+        ``("downweight", reason)`` to lower severity one band, or None for
+        normal delivery. Whatever is returned is recorded on the alert
+        document — a suppression that leaves no trace is forbidden (NFR-09).
+        """
+        return None
+
     def annotate(self, outcome: Any) -> dict[str, Any] | None:
         """Per-entity signals this use case exports after scoring a window.
 
