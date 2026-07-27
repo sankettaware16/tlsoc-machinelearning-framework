@@ -169,11 +169,15 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
 - [x] all with `score_batch` (perf) + `save`/`load`; hygiene clipping now
       skips binary features so a rare label can't be zeroed by p99.9
 
-### 3.3 — bot_detection use case + gate
-- [ ] `usecases/bot_detection.py` (class `BotDetection`, slug `bot_detection`,
-      UC-04) — features + models + gate
-- [ ] Gate: **browser-declared** entity with `P(bot|behavior) ≥ p99.5` sustained
-      ≥30 min → UA-spoofing alert; declared bots never self-alert
+### 3.3 — bot_detection use case + gate *(done)*
+- [x] `usecases/bot_detection.py` (class `BotDetection`, slug `bot_detection`,
+      UC-04) — features + models + gate; cluster model excluded from gate
+      fusion (association is export evidence, not spoofing evidence)
+- [x] Gate: **browser-declared** entity with `P(bot|behavior) ≥ p99.5` sustained
+      ≥30 min (6 consecutive 5m windows, event-time streaks) → UA-spoofing
+      alert; declared bots never self-alert. Gate models calibrate against
+      browser-declared windows (D-021). Spoofer canary
+      (browser UA, machine behavior, 45 min) ships with the use case
 
 ### 3.4 — Cross-use-case signal export (the payoff)
 - [ ] Shared per-entity annotation store: `crawler.human_likeness`,

@@ -5,9 +5,10 @@ Importing this package registers every built-in use case with the registry.
 
 from __future__ import annotations
 
+from .bot_detection import BotDetection
 from .web_recon import WebRecon
 
-__all__ = ["WebRecon", "dependency_order"]
+__all__ = ["BotDetection", "WebRecon", "dependency_order"]
 
 
 def dependency_order(usecase_classes: list[type]) -> list[type]:

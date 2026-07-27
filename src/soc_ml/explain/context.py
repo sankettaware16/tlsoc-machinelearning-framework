@@ -40,6 +40,15 @@ _FEATURE_PHRASES = {
     "web.status_3xx_ratio": "share of redirects",
     "web.status_4xx_ratio": "share of client errors",
     "web.status_5xx_ratio": "share of server errors",
+    "bot.asset_fetch_ratio": "share of requests fetching page assets (css/js/images)",
+    "bot.activity_hour_entropy": "spread of activity around the clock",
+    "bot.referrer_chain_depth": "depth of referrer navigation chains",
+    "bot.path_repeat_ratio": "share of repeat fetches of the same paths",
+    "bot.method_get_ratio": "share of GET requests",
+    "bot.bytes_per_req_p50": "median response size (bytes)",
+    "bot.robots_txt_fetched": "robots.txt was fetched",
+    "bot.declared_bot": "user-agent declares automation",
+    "timing.fano_factor": "burstiness of request timing",
 }
 
 
