@@ -147,10 +147,9 @@ def train_bundle(
             "min_events": getattr(usecase_cls, "MIN_EVENTS", None),
             "min_distinct_paths": getattr(usecase_cls, "MIN_DISTINCT_PATHS", None),
         },
-        # Reproducibility anchor: which feature code produced these vectors.
-        "feature_code_sha256": hashlib.sha256(
-            Path(_wf.__file__).read_bytes()
-        ).hexdigest(),
+        # Reproducibility anchor: which feature code produced these vectors —
+        # every module of the feature package, in stable order.
+        "feature_code_sha256": _feature_code_sha256(),
     }
 
     # Bounded per-feature reference for PSI drift detection (from the cleaned,
@@ -166,6 +165,14 @@ def train_bundle(
         metadata=metadata,
         reference_sample=reference_sample,
     )
+
+
+def _feature_code_sha256() -> str:
+    feature_dir = Path(_wf.__file__).parent
+    digest = hashlib.sha256()
+    for path in sorted(feature_dir.glob("*.py")):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------- #

@@ -31,6 +31,13 @@ from typing import Any
 
 from soc_ml.baseline.profile import EnvironmentProfile, _extension
 from soc_ml.core.contracts import EntityKey, Event, FeatureVector
+from soc_ml.features.bot_features import (
+    BotWindowState,
+    EntityMemory,
+    claimed_crawler_family,
+    declared_bot,
+    verified_crawler,
+)
 
 __all__ = ["WindowFeatureBuilder", "WindowResult", "WEB_RECON_FEATURES"]
 
@@ -51,12 +58,13 @@ WEB_RECON_FEATURES: tuple[str, ...] = (
     "timing.interarrival_cv",
 )
 
-_WINDOW_S = 300  # 5 minutes — the spec's primary short window for UC-02
+_WINDOW_S = 300  # 5 minutes — the spec's primary short window for UC-02/04
 _GRACE_S = 120  # how far the watermark trails before a window closes
 _MAX_DISTINCT_PATHS = 4096  # per-window cap; beyond this "many" is the signal
 _MAX_GAPS = 2048
 _MAX_EVIDENCE_LINES = 10  # spec: alerts carry 3-10 verbatim lines
 _MAX_OPEN_WINDOWS = 250_000  # hard guard against a badly unsorted feed
+_MAX_TRACKED_ENTITIES = 200_000  # cross-window entity-memory cap
 _SWEEP_EVERY = 1000  # events between watermark sweeps
 
 
@@ -80,6 +88,7 @@ class _OpenWindow:
     gaps: list = field(default_factory=list)
     raw_lines: deque = field(default_factory=lambda: deque(maxlen=_MAX_EVIDENCE_LINES))
     ua: str | None = None
+    bot: BotWindowState = field(default_factory=BotWindowState)
 
 
 @dataclass(slots=True)
@@ -105,6 +114,12 @@ class WindowFeatureBuilder:
         self.profile = profile
         self.window_s = window_s
         self._open: dict[tuple[EntityKey, int], _OpenWindow] = {}
+        # Cross-window per-entity memory (activity hours, robots.txt) — the
+        # inputs that make no sense inside a single five-minute slice. Bounded
+        # LRU: past the cap the least-recently-seen entity is evicted (its
+        # history restarts if it returns), and evictions are counted, never
+        # silent (NFR-09).
+        self._memory: dict[EntityKey, EntityMemory] = {}
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -112,6 +127,7 @@ class WindowFeatureBuilder:
             "windows_closed": 0,
             "out_of_order": 0,
             "dropped_open_cap": 0,
+            "entity_memory_capped": 0,
         }
 
     # ------------------------------------------------------------------ #
@@ -160,10 +176,25 @@ class WindowFeatureBuilder:
 
     # ------------------------------------------------------------------ #
 
+    def _memory_for(self, entity: EntityKey) -> EntityMemory:
+        memory = self._memory.pop(entity, None)
+        if memory is None:
+            if len(self._memory) >= _MAX_TRACKED_ENTITIES:
+                # Evict the least-recently-seen entity (dicts keep insertion
+                # order and every access below re-inserts, so the first key
+                # is the coldest).
+                del self._memory[next(iter(self._memory))]
+                self.stats["entity_memory_capped"] += 1
+            memory = EntityMemory()
+        self._memory[entity] = memory
+        return memory
+
     def _fold(self, w: _OpenWindow, event: Event, ts: datetime) -> None:
         server = event.entity.server
         w.count += 1
         w.ua = event.user_agent
+        self._memory_for(w.entity).remember(event)
+        w.bot.fold(event, ts, w.start)
 
         status = event.status_code or 0
         if status == 404:
@@ -237,6 +268,15 @@ class WindowFeatureBuilder:
             "ua.rarity": self.profile.ua_rarity(server, w.ua),
             "timing.interarrival_cv": _cv(w.gaps),
         }
+        values.update(
+            w.bot.finalize(
+                event_count=n,
+                distinct_paths=len(w.paths),
+                window_s=self.window_s,
+                ua=w.ua,
+                memory=self._memory_for(w.entity),
+            )
+        )
         vector = FeatureVector(
             entity=w.entity,
             window="5m",
@@ -251,6 +291,12 @@ class WindowFeatureBuilder:
             "distinct_paths_capped": w.paths_capped,
             "n404": w.n404,
             "user_agent": w.ua,
+            # Identity context for UC-04's gate and the crawler export —
+            # evidence, deliberately never model input (models learn behavior,
+            # not IP ranges).
+            "declared_bot": declared_bot(w.ua),
+            "crawler_family": claimed_crawler_family(w.ua),
+            "verified_crawler": verified_crawler(w.entity.ip, w.ua),
             "raw_lines": list(w.raw_lines),
         }
         return WindowResult(vector=vector, evidence=evidence)

@@ -141,16 +141,19 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
 - [x] Per-use-case backtest canary hook (`UseCase.canary`) — no canary yet
       means the check is skipped, never spuriously failed
 
-### 3.1 — bot_detection features + labels
-- [ ] `features/bot_features.py`: `bot.asset_fetch_ratio`,
+### 3.1 — bot_detection features + labels *(done)*
+- [x] `features/bot_features.py`: `bot.asset_fetch_ratio`,
       `bot.activity_hour_entropy`, `timing.fano_factor`,
       `bot.referrer_chain_depth`, `bot.path_repeat_ratio`,
       `bot.method_get_ratio`, `bot.bytes_per_req_p50`, `bot.robots_txt_fetched`;
-      reuse `timing.interarrival_cv`, `ua.rarity`, `ua.len`, `web.*`
-- [ ] `bot.declared_bot` label from the UA string (keyword matcher) — the free
-      self-supervised label
-- [ ] Verified-crawler check (Googlebot/Bingbot reverse-DNS / published ranges) —
-      the spec's "free precision" identity allowlist (not a data threshold, FR-62 safe)
+      reuse `timing.interarrival_cv`, `ua.rarity`, `ua.len`, `web.*`.
+      Cross-window inputs (hour entropy, robots.txt) come from a bounded LRU
+      per-entity memory in the window builder
+- [x] `bot.declared_bot` label from the UA string (keyword matcher) — the free
+      self-supervised label; rides in the vector as the GBM target
+- [x] Verified-crawler check (Googlebot/Bingbot published ranges) — the spec's
+      "free precision" identity allowlist (not a data threshold, FR-62 safe);
+      carried in window *evidence*, never as a model feature
 
 ### 3.2 — bot_detection models
 - [ ] `models/gbm.py` — gradient-boosted classifier: predict `declared_bot`
