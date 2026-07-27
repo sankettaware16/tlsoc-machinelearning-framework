@@ -115,23 +115,81 @@ corroboration) lands. The daily budget bounds it in the meantime — see D-018.
 
 ---
 
-## Phase 3 — Tier-1 detection complete
+## Phase 3 — bot_detection (UC-04) + cross-use-case suppression *(next)*
 
-**Exit:** the five Tier-1 use cases run together, and fusion demonstrably reduces
-alert volume versus running them independently.
+**Why now:** the `web_recon` production shadow run proved D-008 — search-engine
+crawlers are its dominant false-positive source. `bot_detection` is the fix, and
+it is the first test of the framework's core promise: *adding a detector is
+repeating the proven web_recon path.* Design in `JOURNAL.md` D-019.
 
-- [ ] UC-04 (bot/crawler) — **build before UC-02 tuning finishes**; it produces
-      the known-crawler cluster and human-likeness features that suppress false
-      positives in UC-02/06/15
-- [ ] UC-01 (credential stuffing) — Half-Space Trees streaming layer + coordination layer
-- [ ] UC-06 (scraping) — session autoencoder 16-8-4-8-16
-- [ ] UC-07 (exfiltration) — path-family GMM + quantile forecaster + β-VAE drip
-- [ ] Full fusion: corroboration, fleet-simultaneity suppression, campaign
-      folding, rate governance
-- [ ] SAIF v1: attack generators for each Tier-1 use case + regression gating
+**Exit:** both detectors run in one live runtime; `web_recon`'s crawler fires
+drop measurably because `bot_detection` suppresses verified/known crawlers — and
+every suppression is visible in the alert document, never silent.
 
-**Dependency note:** UC-04 is the FP-suppression backbone. It is ranked 3rd by
-the spec but should be built 2nd.
+This phase has sub-steps because UC-04 introduces **cross-use-case signal
+sharing**, which `web_recon` (a single self-contained detector) did not need.
+
+### 3.0 — Multi-use-case plumbing
+- [ ] Resolve any registered use case by slug in `train` / `backtest` / `run`
+      (replace the `web_recon`-only maps with the plugin registry)
+- [ ] Runtime scores **N enabled use cases per window in dependency order**
+      (UC-04 before UC-02), each with its own bundle, dedup, and budget
+- [ ] Per-use-case health/shadow/alert files keyed by slug
+
+### 3.1 — bot_detection features + labels
+- [ ] `features/bot_features.py`: `bot.asset_fetch_ratio`,
+      `bot.activity_hour_entropy`, `timing.fano_factor`,
+      `bot.referrer_chain_depth`, `bot.path_repeat_ratio`,
+      `bot.method_get_ratio`, `bot.bytes_per_req_p50`, `bot.robots_txt_fetched`;
+      reuse `timing.interarrival_cv`, `ua.rarity`, `ua.len`, `web.*`
+- [ ] `bot.declared_bot` label from the UA string (keyword matcher) — the free
+      self-supervised label
+- [ ] Verified-crawler check (Googlebot/Bingbot reverse-DNS / published ranges) —
+      the spec's "free precision" identity allowlist (not a data threshold, FR-62 safe)
+
+### 3.2 — bot_detection models
+- [ ] `models/gbm.py` — gradient-boosted classifier: predict `declared_bot`
+      from **behavior only**, isotonic-calibrated → P(bot | behavior)
+- [ ] `models/gmm.py` — human-likeness GMM (BIC-selected) over daily vectors
+- [ ] `models/hdbscan_cluster.py` — known-crawler clustering (optional `cluster`
+      extra; degrade gracefully if `hdbscan` absent, NFR-08)
+- [ ] all with `score_batch` (perf) + `save`/`load` + explain hooks
+
+### 3.3 — bot_detection use case + gate
+- [ ] `usecases/bot_detection.py` (class `BotDetection`, slug `bot_detection`,
+      UC-04) — features + models + gate
+- [ ] Gate: **browser-declared** entity with `P(bot|behavior) ≥ p99.5` sustained
+      ≥30 min → UA-spoofing alert; declared bots never self-alert
+
+### 3.4 — Cross-use-case signal export (the payoff)
+- [ ] Shared per-entity annotation store: `crawler.human_likeness`,
+      `crawler.is_known`, `crawler.is_verified`
+- [ ] `bot_detection` writes it each window; the scorer exposes it to later use cases
+
+### 3.5 — web_recon consumes suppression
+- [ ] `web_recon` gate reads the crawler annotation → **suppress verified polite
+      crawlers, down-weight borderline** — recorded visibly in the alert
+- [ ] No change to `web_recon`'s own thresholds (still learned); suppression is a
+      new *input*, not a new threshold
+
+### 3.6 — Validate on elkcc
+- [ ] Train + shadow both detectors on live nginx; measure `web_recon` fire-rate
+      before/after suppression (Googlebot/Bingbot should stop firing)
+- [ ] Confirm `bot_detection` flags a genuine UA-spoofer if present
+- [ ] Decision gate: is the combined fire rate now within budget → go `--mode live`?
+
+**After this phase**, UC-01/06/07 follow the same pattern; then the full fusion
+layer (corroboration, campaign folding, fleet-simultaneity) and SAIF v1.
+
+---
+
+## Phase 3b — Remaining Tier-1 detectors
+
+- [ ] UC-01 `credential_stuffing` — Half-Space Trees streaming + coordination layer
+- [ ] UC-06 `content_scraping` — session autoencoder 16-8-4-8-16 (consumes UC-04 human-likeness)
+- [ ] UC-07 `http_exfiltration` — path-family GMM + quantile forecaster + β-VAE drip
+- [ ] Full fusion: corroboration, fleet-simultaneity suppression, campaign folding
+- [ ] SAIF v1: per-use-case attack generators + regression gating
 
 ---
 

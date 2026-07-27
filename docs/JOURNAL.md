@@ -10,6 +10,86 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-07-27 — UC-04 (bot_detection) design
+
+### D-019 · bot_detection workflow — a detector whose main product is a signal for other detectors
+
+**Context.** The first production shadow run of `web_recon` on live traffic
+confirmed D-008 empirically: ~20-25% of its fires were legitimate search-engine
+crawlers (Googlebot `66.249.64.x`, Bingbot `157.55.39.60`). That noise is not a
+`web_recon` bug to tune away — it is exactly what `bot_detection` (UC-04) exists
+to remove. This entry designs UC-04 before implementation.
+
+**Naming (docs/NAMING.md — CI-enforced).** slug `bot_detection` · spec ID
+`UC-04` · title "Bot & Abnormal Crawler Detection" · module
+`src/soc_ml/usecases/bot_detection.py` · class `BotDetection` · config key
+`bot_detection` (already present). Its exported per-entity signal is namespaced
+`crawler.*` (see below), features `bot.*` / reused `timing.*` / `ua.*`.
+
+**The key insight that shapes everything.** UC-04 is unusual: its *primary*
+value is not its own alert stream, it is the **per-entity human-likeness /
+known-crawler signal it exports for `web_recon`, `content_scraping`, and
+`app_abuse` to consume** (SPEC_DIGEST §5, UC-04). So the design has two outputs,
+and the export is the more important one.
+
+**Detection logic (self-supervised — labels come free).**
+1. **Label from the UA string, predict from behavior.** A `declared_bot` label
+   is derived cheaply from the user-agent (contains `bot`, `crawler`, `spider`,
+   `Googlebot`, `bingbot`, ...). A gradient-boosted classifier then predicts
+   `declared_bot` **from behavioral features only** (never the UA). Two payoffs:
+   (a) an entity whose UA says "browser" but whose *behavior* scores as a bot is
+   a **spoofer** (the UC-04 alert); (b) the calibrated P(bot | behavior) is the
+   **human-likeness signal** other use cases consume.
+2. **Human-likeness GMM + HDBSCAN crawler clustering.** A GMM over daily
+   behavior vectors yields a smooth human-likeness probability; HDBSCAN groups
+   entities that cluster with known declared bots into a **known-crawler
+   cluster**, catching undeclared automation by association.
+3. **Verified-crawler check (the spec's "free precision" Sigma layer).**
+   Search engines are confirmed by reverse-DNS / published ranges (Googlebot,
+   Bingbot). Verified + polite crawlers are marked `crawler.is_verified` so
+   downstream suppression is *certain*, not probabilistic. This is an
+   allowlist of **identity**, not a detection threshold — FR-62 is untouched.
+
+**Features** (reuse first, add only what's new): reused `timing.interarrival_cv`,
+`ua.rarity`, `ua.len`, `web.referrer_absent_ratio`, `web.status_*`; new
+`bot.asset_fetch_ratio` (browsers fetch css/js/images; scripts don't),
+`bot.activity_hour_entropy` (24-bin), `timing.fano_factor`,
+`bot.referrer_chain_depth`, `bot.path_repeat_ratio`, `bot.method_get_ratio`,
+`bot.bytes_per_req_p50`, `bot.declared_bot`, `bot.robots_txt_fetched`.
+
+**Gate (own alert).** A **browser-declared** entity with
+`P(bot | behavior) ≥ p99.5` sustained ≥30 min → UA-spoofing alert. Declared bots
+never alert here (they are the training signal, not the target); they flow to the
+export instead.
+
+**The export mechanism (new cross-use-case infrastructure).** UC-04 writes a
+per-entity annotation to a shared store the scorer can read:
+`crawler.human_likeness` (0-1), `crawler.is_known` (clustered with bots),
+`crawler.is_verified` (reverse-DNS confirmed). `web_recon`'s gate reads it: a
+**verified, polite** crawler is suppressed (and the suppression is **recorded
+visibly** in the shadow/alert doc — never silent, NFR-09); a borderline entity is
+only down-weighted. This is the first real instance of the spec's cross-use-case
+feature sharing, and it needs the runtime to score **multiple use cases per
+window in dependency order** (UC-04 before UC-02) — see the roadmap phase.
+
+**Why not just an allowlist and skip the ML.** The verified-crawler check alone
+would remove Googlebot/Bingbot, but not the long tail of undeclared scrapers,
+monitoring bots, and cloud automation that also inflate `web_recon`. The ML
+human-likeness signal covers that tail and generalizes to `content_scraping` /
+`app_abuse`. So: ship the allowlist as the certain-suppression fast path *inside*
+UC-04, and the ML signal as the general one.
+
+**Rules out.** Building crawler handling inside `web_recon` (wrong layer,
+duplicates UC-04); a config-driven "ignore these IPs" threshold (identity
+allowlist is fine, data thresholds are not); silent suppression.
+
+**Lives in.** `usecases/bot_detection.py`, a new `features/bot_features.py`, new
+model wrappers (`models/gbm.py`, `models/gmm.py`, `models/hdbscan_cluster.py`),
+a shared entity-annotation store, and the multi-use-case runtime. Phased in
+`ROADMAP.md` Phase 3.
+
+---
+
 ## 2026-07-27 — Phase 2: web_recon made production-deployable
 
 ### D-018 · Split train/score into a shared core; build the live runtime around it
