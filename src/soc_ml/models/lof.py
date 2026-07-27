@@ -60,6 +60,19 @@ class LOFNoveltyModel(Model):
         row = np.array([[x.get(f, 0.0) for f in self._features]], dtype=float)
         return float(-self._pipeline.score_samples(row)[0])
 
+    def score_batch(self, rows: list[dict[str, float]]) -> list[float]:
+        """Score many rows in one call (vectorized) — see IsolationForest note."""
+        import numpy as np
+
+        if self._pipeline is None:
+            raise RuntimeError("lof_novelty: score_batch() before fit()/load()")
+        if not rows:
+            return []
+        matrix = np.array(
+            [[x.get(f, 0.0) for f in self._features] for x in rows], dtype=float
+        )
+        return [float(v) for v in -self._pipeline.score_samples(matrix)]
+
     def save(self, path: Path) -> None:
         import joblib
 

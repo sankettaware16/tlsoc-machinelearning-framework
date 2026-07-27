@@ -168,6 +168,16 @@ class Model(Plugin):
     def score(self, x: dict[str, float]) -> float:
         """Raw anomaly score. Meaningless across servers until calibrated."""
 
+    def score_batch(self, rows: list[dict[str, float]]) -> list[float]:
+        """Score many rows at once. Override to vectorize.
+
+        Training scores every window twice (hygiene ranking + calibration), so a
+        per-row default is O(n) framework/sklearn-call overhead — models with a
+        vectorized path (trees, distance models) should override this. The
+        default keeps simple models correct.
+        """
+        return [self.score(x) for x in rows]
+
     @abc.abstractmethod
     def save(self, path: Path) -> None: ...
 

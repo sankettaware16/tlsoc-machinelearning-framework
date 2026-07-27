@@ -40,6 +40,10 @@ class TrainingError(ValueError):
     """Training could not proceed (too little data, empty stream, ...)."""
 
 
+def _noop(_msg: str) -> None:
+    return None
+
+
 def train_bundle(
     usecase_cls: type[UseCase],
     model_factories: dict[str, type],
@@ -48,27 +52,45 @@ def train_bundle(
     version: str | None = None,
     source_desc: str = "",
     now: datetime | None = None,
+    log: Callable[[str], None] = _noop,
+    progress_every: int = 100_000,
 ) -> ModelBundle:
-    """Fit a full bundle for ``usecase_cls`` over the events the factory yields."""
+    """Fit a full bundle for ``usecase_cls`` over the events the factory yields.
+
+    ``log`` receives human progress lines. Training makes two full passes over
+    the input (pass 1 learns the profile, pass 2 needs that profile to build
+    features), so on a multi-million-event file it is minutes of work — progress
+    output is the difference between "working" and "looks hung".
+    """
     now = now or datetime.now(timezone.utc)
     version = version or ("v" + now.strftime("%Y%m%dT%H%M%S"))
     slug = usecase_cls.name
 
     # -- pass 1: Environment Profile ------------------------------------- #
+    log("pass 1/2: learning the environment profile ...")
     profile = EnvironmentProfile()
     observed = 0
     for event in events():
         profile.observe(event)
         observed += 1
+        if observed % progress_every == 0:
+            log(f"  profile: {observed:,} events")
     if observed == 0:
         raise TrainingError(f"{slug}: empty training stream")
+    log(f"  profile built from {observed:,} events, {len(profile.servers())} server(s)")
 
     # -- pass 2: window feature vectors ---------------------------------- #
+    log("pass 2/2: building feature windows ...")
     builder = WindowFeatureBuilder(profile)
     results = []
+    seen = 0
     for event in events():
+        seen += 1
         results.extend(builder.add(event))
+        if seen % progress_every == 0:
+            log(f"  features: {seen:,} events -> {len(results):,} windows")
     results.extend(builder.flush())
+    log(f"  {len(results):,} feature windows")
     if len(results) < _MIN_TRAIN_WINDOWS:
         raise TrainingError(
             f"{slug}: only {len(results)} training windows "
@@ -85,6 +107,8 @@ def train_bundle(
         raise TrainingError(f"{slug}: too few usable feature vectors after selection")
 
     # -- corpus hygiene (FR-56) ------------------------------------------ #
+    log(f"corpus hygiene + fitting {len(usecase_cls.models)} model(s) "
+        f"on {len(model_inputs):,} windows ...")
     clip = _quantile_per_feature(model_inputs, _HYGIENE_CLIP_Q)
     clipped = [_clip(x, clip) for x in model_inputs]
     cleaned, dropped = _drop_most_anomalous(clipped, model_factories)
@@ -93,10 +117,13 @@ def train_bundle(
     models: dict[str, Any] = {}
     calibrators: dict[str, PercentileCalibrator] = {}
     for mslug in usecase_cls.models:
+        log(f"  fitting {mslug} ...")
         model = model_factories[mslug]()
         model.fit(cleaned)
         models[mslug] = model
-        calibrators[mslug] = PercentileCalibrator().fit([model.score(x) for x in cleaned])
+        # Batch-score for calibration — one vectorized call, not a per-row loop.
+        calibrators[mslug] = PercentileCalibrator().fit(model.score_batch(cleaned))
+    log("done fitting; writing bundle")
 
     metadata = {
         "usecase": slug,
@@ -158,7 +185,12 @@ def _drop_most_anomalous(
     factory = model_factories.get("isolation_forest", IsolationForestModel)
     prelim = factory()
     prelim.fit(rows)
-    ranked = sorted(rows, key=prelim.score)
+    # Score all rows in one vectorized call, then rank by index — scoring each
+    # row individually inside sorted()'s key is the single biggest training
+    # slowdown at scale.
+    scores = prelim.score_batch(rows)
+    order = sorted(range(len(rows)), key=lambda i: scores[i])
+    ranked = [rows[i] for i in order]
     n_drop = max(1, int(len(ranked) * _HYGIENE_DROP_FRACTION))
     return ranked[: len(ranked) - n_drop], n_drop
 

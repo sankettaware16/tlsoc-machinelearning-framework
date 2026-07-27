@@ -432,7 +432,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 def cmd_train(args: argparse.Namespace) -> int:
     """Train a model bundle from historical logs and register it (FR-53)."""
-    from soc_ml.core.contracts import Event
+    from datetime import datetime
+
     from soc_ml.core.plugins import registry as plugin_registry
     from soc_ml.ingest.file import FileSource
     from soc_ml.registry.store import ModelRegistry
@@ -457,12 +458,20 @@ def cmd_train(args: argparse.Namespace) -> int:
                 break
 
     print(f"training {slug} from {args.input}"
-          + (f" (first {args.limit:,} events)" if args.limit else ""))
+          + (f" (first {args.limit:,} events)" if args.limit else " (all events)"))
+    print("note: this reads the input twice (profile, then features) — progress below\n")
+
+    def progress(msg: str) -> None:
+        print(f"  [{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
     try:
-        bundle = train_bundle(uc_cls, factories, stream, source_desc=str(args.input))
+        bundle = train_bundle(
+            uc_cls, factories, stream, source_desc=str(args.input), log=progress
+        )
     except TrainingError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
+    print()
 
     registry = ModelRegistry(args.out)
     registry.save_bundle(bundle)

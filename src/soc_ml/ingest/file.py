@@ -30,6 +30,17 @@ from typing import Any
 from soc_ml.core.contracts import Event
 from soc_ml.core.plugins import Source
 
+# orjson parses bytes 2-3x faster than stdlib json and is a core dependency;
+# fall back gracefully if it is ever missing (NFR-08). Both accept bytes.
+try:
+    import orjson
+
+    def _loads(raw: bytes):
+        return orjson.loads(raw)
+except ImportError:  # pragma: no cover - orjson is a core dependency
+    def _loads(raw: bytes):
+        return json.loads(raw)
+
 log = logging.getLogger(__name__)
 
 __all__ = ["FileSource", "IngestStats"]
@@ -182,7 +193,7 @@ class FileSource(Source):
 
     def _parse(self, raw: bytes, source_key: str) -> Event | None:
         try:
-            return Event.from_ecs(json.loads(raw))
+            return Event.from_ecs(_loads(raw))
         except Exception as exc:
             self.stats.record_failure(exc)
             self._dead_letter(raw, source_key, exc)
