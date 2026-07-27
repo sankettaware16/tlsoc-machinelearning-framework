@@ -59,6 +59,13 @@ class WebRecon(UseCase):
     def __init__(self, profile: EnvironmentProfile) -> None:
         self.profile = profile
 
+    @classmethod
+    def canary(cls, server, start):
+        """A deterministic enumeration burst — the backtest's detection check."""
+        from soc_ml.evaluation.canary import canary_events
+
+        return canary_events(server, start)
+
     # ------------------------------------------------------------------ #
 
     def vector(self, fv: FeatureVector) -> dict[str, float] | None:

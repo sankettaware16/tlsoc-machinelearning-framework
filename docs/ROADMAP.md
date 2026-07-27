@@ -129,12 +129,17 @@ every suppression is visible in the alert document, never silent.
 This phase has sub-steps because UC-04 introduces **cross-use-case signal
 sharing**, which `web_recon` (a single self-contained detector) did not need.
 
-### 3.0 — Multi-use-case plumbing
-- [ ] Resolve any registered use case by slug in `train` / `backtest` / `run`
+### 3.0 — Multi-use-case plumbing *(done)*
+- [x] Resolve any registered use case by slug in `train` / `backtest` / `run`
       (replace the `web_recon`-only maps with the plugin registry)
-- [ ] Runtime scores **N enabled use cases per window in dependency order**
+- [x] Runtime scores **N enabled use cases per window in dependency order**
       (UC-04 before UC-02), each with its own bundle, dedup, and budget
-- [ ] Per-use-case health/shadow/alert files keyed by slug
+      (`UseCase.depends_on` + `usecases.dependency_order`)
+- [x] Per-use-case health/shadow/alert files keyed by slug; the shared ingest
+      checkpoint is keyed by the *set* of use cases (sorted slugs joined by
+      `+`), so a single-use-case deployment resumes seamlessly after upgrade
+- [x] Per-use-case backtest canary hook (`UseCase.canary`) — no canary yet
+      means the check is skipped, never spuriously failed
 
 ### 3.1 — bot_detection features + labels
 - [ ] `features/bot_features.py`: `bot.asset_fetch_ratio`,

@@ -375,22 +375,35 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_usecase(slug: str):
+    """Resolve a use-case slug via the plugin registry (built-ins + drop-ins).
+
+    Returns the class, or None after printing an error that lists what exists —
+    the same discovery path for every pipeline command, so a drop-in use case
+    under ``plugins/`` works in train/backtest/run without core edits (NFR-12).
+    """
+    from soc_ml.core import registry
+
+    registry.discover(Path("plugins"))
+    try:
+        return registry.get("usecase", slug)
+    except LookupError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return None
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     """Run the offline backtest for one use case (streaming; FR-71/72)."""
     from soc_ml.evaluation.backtest import run_backtest
 
     slug = args.uc.replace("-", "_")
-    if slug != "web_recon":
-        print(
-            f"[ERROR] use case {slug!r} is not implemented yet — "
-            "web_recon (UC-02) is the Phase-1 slice; see docs/ROADMAP.md",
-            file=sys.stderr,
-        )
+    if _resolve_usecase(slug) is None:
         return 3
 
     try:
         report = run_backtest(
             args.input,
+            usecase=slug,
             limit=args.limit,
             train_frac=args.train_frac,
             out_dir=args.out,
@@ -438,14 +451,12 @@ def cmd_train(args: argparse.Namespace) -> int:
     from soc_ml.ingest.file import FileSource
     from soc_ml.registry.store import ModelRegistry
     from soc_ml.training.trainer import TrainingError, train_bundle
-    from soc_ml.usecases.web_recon import WebRecon
     import soc_ml.models  # noqa: F401
 
     slug = args.uc.replace("-", "_")
-    if slug != "web_recon":
-        print(f"[ERROR] use case {slug!r} not implemented (web_recon only)", file=sys.stderr)
+    uc_cls = _resolve_usecase(slug)
+    if uc_cls is None:
         return 3
-    uc_cls = WebRecon
     factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
 
     def stream():
@@ -495,10 +506,13 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the live detection pipeline (streaming, restart-safe)."""
-    from soc_ml.core import load_config
+    from soc_ml.core import load_config, registry
     from soc_ml.detection.runtime import DetectionRuntime, RuntimeConfig
 
-    slug = args.uc.replace("-", "_")
+    registry.discover(Path("plugins"))  # drop-in use cases work in run too
+    slugs = tuple(
+        s.strip().replace("-", "_") for s in args.uc.split(",") if s.strip()
+    )
     input_dir = args.input
     if input_dir is None:
         try:
@@ -512,7 +526,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     rc = RuntimeConfig(
-        usecase=slug,
+        usecases=slugs,
         input_dir=input_dir,
         data_dir=args.out,
         mode=args.mode,
@@ -639,7 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     rn = sub.add_parser("run", help="run the live detection pipeline (streaming)")
     rn.add_argument("--input", help="parser output dir to tail (default: config input_dir)")
-    rn.add_argument("--uc", default="web_recon", help="use case slug")
+    rn.add_argument("--uc", default="web_recon",
+                    help="use case slug(s), comma-separated; scored per window "
+                         "in dependency order (e.g. bot_detection,web_recon)")
     rn.add_argument("--mode", default="shadow", choices=["observe", "shadow", "live"],
                     help="observe/shadow = record only; live = deliver alerts")
     rn.add_argument("--out", default="data", help="registry/data root")

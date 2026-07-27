@@ -9,6 +9,12 @@ What it guarantees for production:
 
 * **Same scoring code as the backtest** — it uses ``detection.scorer`` and
   ``training.trainer``, so what a backtest validated is what runs (FR-72).
+* **N use cases per window, in dependency order** — one runtime scores every
+  configured use case on the same event stream. A use case that exports a
+  per-entity signal (bot_detection) is scored before its consumers (web_recon),
+  per ``UseCase.depends_on``. Each use case keeps its own bundle, dedup,
+  budget, drift reservoir, and per-slug health/shadow/alert files — one
+  detector's noise can never spend another's budget.
 * **Three modes, per the cold-start protocol** (SPEC §8):
     - ``observe`` — score, record to a shadow log, deliver nothing;
     - ``shadow`` — same, kept distinct so an operator can run a challenger beside
@@ -16,17 +22,19 @@ What it guarantees for production:
     - ``live`` — deliver alerts to the configured sink.
 * **Restart-safe** — the source checkpoint (byte offsets) is persisted and
   reloaded, so a restart resumes exactly where it stopped, reprocessing nothing
-  and losing nothing.
-* **Never goes stale** — it keeps a bounded reservoir of live feature values and
-  computes PSI against the bundle's training reference; significant drift raises
-  a health event and flags a retrain (it never silently swaps a model).
-* **Never fails silently** — health (EPS, counts, mode, drift band, uptime) is
-  written to ``data/state`` on a timer and on shutdown; a missing model is a
-  loud, explained refusal, not a crash (NFR-08/09).
-* **Cold-start** — with ``--allow-cold-start`` and no trained model, it buffers a
-  bounded warmup of live traffic, trains a first bundle from it, promotes it, and
-  begins scoring — so the framework adapts to a brand-new environment with no
-  historical data on hand.
+  and losing nothing. The checkpoint is keyed by the *set* of use cases this
+  runtime serves; changing the set starts a fresh read (never a corrupt resume).
+* **Never goes stale** — it keeps a bounded reservoir of live feature values per
+  use case and computes PSI against each bundle's training reference;
+  significant drift raises a health event and flags a retrain (it never silently
+  swaps a model).
+* **Never fails silently** — per-use-case health (EPS, counts, mode, drift band,
+  uptime) is written to ``data/state`` on a timer and on shutdown; a missing
+  model is a loud, explained refusal, not a crash (NFR-08/09).
+* **Cold-start** — with ``--allow-cold-start`` and missing trained models, it
+  buffers a bounded warmup of live traffic once, trains a first bundle for every
+  use case that lacks one, promotes them, and begins scoring — so the framework
+  adapts to a brand-new environment with no historical data on hand.
 """
 
 from __future__ import annotations
@@ -36,10 +44,9 @@ import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from soc_ml.alerting.file_sink import FileSink
-from soc_ml.core.plugins import Sink, registry as plugin_registry
+from soc_ml.core.plugins import Sink, UseCase, registry as plugin_registry
 from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
@@ -48,23 +55,23 @@ from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.ingest.file import FileSource
 from soc_ml.registry.store import ModelBundle, ModelRegistry
 from soc_ml.training.trainer import TrainingError, train_bundle
-from soc_ml.usecases.web_recon import WebRecon
+from soc_ml.usecases import dependency_order
 
 import soc_ml.models  # noqa: F401 — register model plugins
+import soc_ml.usecases  # noqa: F401 — register use-case plugins
 
 __all__ = ["DetectionRuntime", "RuntimeConfig"]
 
-_USECASES = {"web_recon": WebRecon}
 _DRIFT_RESERVOIR = 4000  # live feature values retained per feature for PSI
 
 
 class RuntimeConfig:
-    """Everything the runtime needs to run one use case."""
+    """Everything the runtime needs to run one set of use cases."""
 
     def __init__(
         self,
         *,
-        usecase: str = "web_recon",
+        usecases: str | tuple[str, ...] = ("web_recon",),
         input_dir: str | Path,
         data_dir: str | Path = "data",
         mode: str = "shadow",
@@ -75,10 +82,10 @@ class RuntimeConfig:
         drift_every_s: float = 3600.0,
         allow_cold_start: bool = False,
         warmup_events: int = 200_000,
-        daily_alert_budget: int = 50,
+        daily_alert_budget: int | None = None,
         sink_name: str = "file",
     ) -> None:
-        self.usecase = usecase
+        self.usecases = (usecases,) if isinstance(usecases, str) else tuple(usecases)
         self.input_dir = Path(input_dir)
         self.data_dir = Path(data_dir)
         self.mode = mode
@@ -89,34 +96,83 @@ class RuntimeConfig:
         self.drift_every_s = drift_every_s
         self.allow_cold_start = allow_cold_start
         self.warmup_events = warmup_events
+        #: None = each use case's own class default (delivery policy, FR-34).
         self.daily_alert_budget = daily_alert_budget
         self.sink_name = sink_name
+
+    @property
+    def set_key(self) -> str:
+        """Stable name for this runtime's use-case set — keys shared state files.
+
+        Sorted, so ``--uc a,b`` and ``--uc b,a`` resume the same checkpoint. A
+        single-use-case runtime keeps its historical key (``web_recon_...``),
+        so existing deployments resume seamlessly after upgrade.
+        """
+        return "+".join(sorted(self.usecases))
+
+
+class _UseCaseRunner:
+    """One use case's private state inside the shared runtime loop.
+
+    Isolation is the point: bundle, feature builder, dedup, budget, drift
+    reservoir, and output files are all per use case, so detectors never
+    contend for each other's cooldowns or budgets and every artifact on disk
+    is keyed by slug.
+    """
+
+    def __init__(self, uc_cls: type[UseCase], daily_budget_override: int | None) -> None:
+        self.uc_cls = uc_cls
+        self.slug = uc_cls.name
+        self.factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
+        self.bundle: ModelBundle | None = None
+        self.scorer: Scorer | None = None
+        self.builder: WindowFeatureBuilder | None = None
+        self.dedup = AlertDeduplicator()
+        self.budget = AlertBudget(
+            daily_budget_override
+            if daily_budget_override is not None
+            else uc_cls.daily_alert_budget
+        )
+        self.reservoir: dict[str, list[float]] = {}
+        self.sink: Sink | None = None
+        self.shadow_fh = None
+        self.digest_fh = None
+        self.stats = {
+            "windows": 0,
+            "alerts_delivered": 0,
+            "alerts_folded": 0,
+            "alerts_digested": 0,
+            "last_drift_band": "unknown",
+        }
+
+    def activate(self, bundle: ModelBundle) -> None:
+        self.bundle = bundle
+        self.scorer = Scorer(self.uc_cls, bundle)
+        self.builder = WindowFeatureBuilder(bundle.profile)
 
 
 class DetectionRuntime:
     def __init__(self, config: RuntimeConfig, log=print) -> None:
         self.cfg = config
         self.log = log
-        self.uc_cls = _USECASES.get(config.usecase)
-        if self.uc_cls is None:
-            raise ValueError(f"unknown use case {config.usecase!r}")
-        self.factories = {
-            m: plugin_registry.get("model", m) for m in self.uc_cls.models
-        }
+        classes = []
+        for slug in config.usecases:
+            cls = plugin_registry.all("usecase").get(slug)
+            if cls is None:
+                available = ", ".join(sorted(plugin_registry.all("usecase"))) or "none"
+                raise ValueError(
+                    f"unknown use case {slug!r}; available: {available}"
+                )
+            classes.append(cls)
+        # Scoring order is the dependency order: exporters before consumers.
+        self.runners = [
+            _UseCaseRunner(cls, config.daily_alert_budget)
+            for cls in dependency_order(classes)
+        ]
         self.registry = ModelRegistry(config.data_dir)
         self.state_dir = config.data_dir / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
-        self.bundle: ModelBundle | None = None
-        self.scorer: Scorer | None = None
-        self.builder: WindowFeatureBuilder | None = None
-        self.dedup = AlertDeduplicator()
-        self.budget = AlertBudget(config.daily_alert_budget)
-        self._reservoir: dict[str, list[float]] = {}
-
-        self.sink: Sink | None = None
-        self._shadow_fh = None
-        self._digest_fh = None
         self._stop = False
         self._started = time.monotonic()
         self.stats = {
@@ -125,7 +181,6 @@ class DetectionRuntime:
             "alerts_delivered": 0,
             "alerts_folded": 0,
             "alerts_digested": 0,
-            "last_drift_band": "unknown",
         }
 
     # ------------------------------------------------------------------ #
@@ -134,7 +189,8 @@ class DetectionRuntime:
 
     def run(self) -> int:
         self._install_signals()
-        self.log(f"[runtime] use case {self.cfg.usecase}, mode={self.cfg.mode}")
+        order = ", ".join(r.slug for r in self.runners)
+        self.log(f"[runtime] use cases {order} (dependency order), mode={self.cfg.mode}")
 
         if not self._load_or_bootstrap():
             return 2  # explained inside
@@ -142,10 +198,12 @@ class DetectionRuntime:
         source = FileSource(
             self.cfg.input_dir, follow=self.cfg.follow,
             poll_interval_s=self.cfg.poll_interval_s,
-            dlq_path=self.state_dir / f"{self.cfg.usecase}_dlq.ndjson",
+            dlq_path=self.state_dir / f"{self.cfg.set_key}_dlq.ndjson",
         )
         self._restore_checkpoint(source)
-        self._open_sink()
+        if self.cfg.mode == "live":
+            for runner in self.runners:
+                self._open_sink(runner)
 
         last_ckpt = last_health = last_drift = time.monotonic()
         try:
@@ -153,8 +211,12 @@ class DetectionRuntime:
                 if self._stop:
                     break
                 self.stats["events"] += 1
-                for result in self.builder.add(event):
-                    self._handle(result)
+                # Every runner sees every event; closed windows are handled
+                # immediately per runner, so an exporter's window for a bucket
+                # is scored before any consumer's window for that same bucket.
+                for runner in self.runners:
+                    for result in runner.builder.add(event):
+                        self._handle(runner, result)
 
                 now = time.monotonic()
                 if now - last_ckpt >= self.cfg.checkpoint_every_s:
@@ -175,27 +237,36 @@ class DetectionRuntime:
     # ------------------------------------------------------------------ #
 
     def _load_or_bootstrap(self) -> bool:
-        bundle = self.registry.load_current(self.cfg.usecase, self.factories)
-        if bundle is not None:
-            self._activate(bundle)
-            self.log(f"[runtime] serving bundle {bundle.version}")
+        missing: list[_UseCaseRunner] = []
+        for runner in self.runners:
+            bundle = self.registry.load_current(runner.slug, runner.factories)
+            if bundle is not None:
+                runner.activate(bundle)
+                self.log(f"[runtime] {runner.slug}: serving bundle {bundle.version}")
+            else:
+                missing.append(runner)
+        if not missing:
             return True
 
+        slugs = ", ".join(r.slug for r in missing)
         if not self.cfg.allow_cold_start:
             self.log(
-                f"[runtime] ERROR: no trained model for {self.cfg.usecase!r}. "
-                f"Run `soc-ml train --input <historical logs>` and promote it, "
-                f"or pass --allow-cold-start to learn from live traffic first."
+                f"[runtime] ERROR: no trained model for {slugs}. "
+                f"Run `soc-ml train --uc <slug> --input <historical logs>` and "
+                f"promote it, or pass --allow-cold-start to learn from live "
+                f"traffic first."
             )
             return False
 
-        return self._cold_start()
+        return self._cold_start(missing)
 
-    def _cold_start(self) -> bool:
-        """Buffer a bounded warmup of live traffic, train, promote, then serve."""
+    def _cold_start(self, missing: list[_UseCaseRunner]) -> bool:
+        """Buffer one bounded warmup of live traffic, then train every missing
+        use case from it, promote, and serve."""
         self.log(
-            f"[runtime] cold start: buffering up to {self.cfg.warmup_events:,} "
-            "events to learn this environment (no alerts during warmup)"
+            f"[runtime] cold start ({', '.join(r.slug for r in missing)}): "
+            f"buffering up to {self.cfg.warmup_events:,} events to learn this "
+            "environment (no alerts during warmup)"
         )
         source = FileSource(
             self.cfg.input_dir, follow=self.cfg.follow,
@@ -213,63 +284,65 @@ class DetectionRuntime:
                 self.log(f"[runtime] warmup {len(buffer):,}/{self.cfg.warmup_events:,}")
         source.close()
 
-        try:
-            bundle = train_bundle(
-                self.uc_cls, self.factories, lambda: iter(buffer),
-                source_desc="cold-start warmup",
-            )
-        except TrainingError as exc:
-            self.log(f"[runtime] ERROR: cold start could not train a model: {exc}")
-            return False
-
-        self.registry.save_bundle(bundle)
-        self.registry.promote(self.cfg.usecase, bundle.version)
-        self._activate(bundle)
-        self.log(f"[runtime] cold start complete — promoted {bundle.version}")
+        for runner in missing:
+            try:
+                bundle = train_bundle(
+                    runner.uc_cls, runner.factories, lambda: iter(buffer),
+                    source_desc="cold-start warmup",
+                )
+            except TrainingError as exc:
+                self.log(
+                    f"[runtime] ERROR: cold start could not train "
+                    f"{runner.slug}: {exc}"
+                )
+                return False
+            self.registry.save_bundle(bundle)
+            self.registry.promote(runner.slug, bundle.version)
+            runner.activate(bundle)
+            self.log(f"[runtime] cold start: promoted {runner.slug} {bundle.version}")
         return True
-
-    def _activate(self, bundle: ModelBundle) -> None:
-        self.bundle = bundle
-        self.scorer = Scorer(self.uc_cls, bundle)
-        self.builder = WindowFeatureBuilder(bundle.profile)
 
     # ------------------------------------------------------------------ #
     # Per-window handling
     # ------------------------------------------------------------------ #
 
-    def _handle(self, result) -> None:
-        outcome = self.scorer.score(result)
+    def _handle(self, runner: _UseCaseRunner, result) -> None:
+        outcome = runner.scorer.score(result)
         if outcome is None:
             return
+        runner.stats["windows"] += 1
         self.stats["windows"] += 1
-        self._collect_drift(outcome)
+        self._collect_drift(runner, outcome)
 
         if self.cfg.mode == "live":
             if outcome.fired and outcome.alert is not None:
-                self._deliver(outcome)
+                self._deliver(runner, outcome)
         else:
             # observe / shadow: record everything, deliver nothing.
-            self._shadow_record(outcome)
+            self._shadow_record(runner, outcome)
 
-    def _deliver(self, outcome) -> None:
+    def _deliver(self, runner: _UseCaseRunner, outcome) -> None:
         # 1. Fold repeats of the same entity into one open alert (dedup).
-        decision = self.dedup.decide(outcome.alert)
+        decision = runner.dedup.decide(outcome.alert)
         if not decision.deliver:
+            runner.stats["alerts_folded"] += 1
             self.stats["alerts_folded"] += 1
             return
         # 2. Cap daily delivery per server; overflow -> digest, never dropped.
-        if self.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
-            self._digest(outcome.alert)
+        if runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
+            self._digest(runner, outcome.alert)
+            runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
             return
-        self.sink.emit_alert(outcome.alert)
+        runner.sink.emit_alert(outcome.alert)
+        runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1
 
-    def _digest(self, alert) -> None:
-        if self._digest_fh is None:
-            path = self.state_dir / f"{self.cfg.usecase}_digest.ndjson"
-            self._digest_fh = path.open("a", encoding="utf-8")
-        self._digest_fh.write(
+    def _digest(self, runner: _UseCaseRunner, alert) -> None:
+        if runner.digest_fh is None:
+            path = self.state_dir / f"{runner.slug}_digest.ndjson"
+            runner.digest_fh = path.open("a", encoding="utf-8")
+        runner.digest_fh.write(
             json.dumps({
                 "@timestamp": alert.timestamp.isoformat(),
                 "usecase": alert.usecase,
@@ -280,57 +353,59 @@ class DetectionRuntime:
             }) + "\n"
         )
 
-    def _shadow_record(self, outcome) -> None:
-        if self._shadow_fh is None:
-            path = self.state_dir / f"{self.cfg.usecase}_shadow.ndjson"
-            self._shadow_fh = path.open("a", encoding="utf-8")
+    def _shadow_record(self, runner: _UseCaseRunner, outcome) -> None:
+        if runner.shadow_fh is None:
+            path = self.state_dir / f"{runner.slug}_shadow.ndjson"
+            runner.shadow_fh = path.open("a", encoding="utf-8")
         row = {**outcome.record(), "would_alert": outcome.fired}
-        self._shadow_fh.write(json.dumps(row) + "\n")
+        runner.shadow_fh.write(json.dumps(row) + "\n")
 
     # ------------------------------------------------------------------ #
     # Drift
     # ------------------------------------------------------------------ #
 
-    def _collect_drift(self, outcome) -> None:
+    def _collect_drift(self, runner: _UseCaseRunner, outcome) -> None:
         # Reservoir the model-input features of each scored window; PSI later
         # compares these live values against the bundle's training reference.
         for feature, value in outcome.features.items():
-            bucket = self._reservoir.setdefault(feature, [])
+            bucket = runner.reservoir.setdefault(feature, [])
             if len(bucket) < _DRIFT_RESERVOIR:
                 bucket.append(value)
 
     def _check_drift(self) -> None:
-        if not self.bundle or not self.bundle.reference_sample:
-            return
-        per_feature = {}
-        for feature, ref in self.bundle.reference_sample.items():
-            cur = self._reservoir.get(feature, [])
-            if len(cur) >= 50:
-                per_feature[feature] = population_stability_index(ref, cur)
-        if not per_feature:
-            return
-        report = DriftReport(per_feature)
-        self.stats["last_drift_band"] = report.band
-        (self.state_dir / f"{self.cfg.usecase}_drift.json").write_text(
-            json.dumps(report.to_dict(), indent=2), encoding="utf-8"
-        )
-        if report.should_retrain():
-            self.log(
-                f"[runtime] DRIFT: significant on {report.drifted_features} "
-                f"(max PSI {report.max_psi:.2f}) — retrain recommended: "
-                f"`soc-ml train --input <recent logs>`"
+        for runner in self.runners:
+            if not runner.bundle or not runner.bundle.reference_sample:
+                continue
+            per_feature = {}
+            for feature, ref in runner.bundle.reference_sample.items():
+                cur = runner.reservoir.get(feature, [])
+                if len(cur) >= 50:
+                    per_feature[feature] = population_stability_index(ref, cur)
+            if not per_feature:
+                continue
+            report = DriftReport(per_feature)
+            runner.stats["last_drift_band"] = report.band
+            (self.state_dir / f"{runner.slug}_drift.json").write_text(
+                json.dumps(report.to_dict(), indent=2), encoding="utf-8"
             )
-        # Reservoir rolls forward: keep the second half so the next window
-        # measures against fresher live data.
-        for feature, bucket in self._reservoir.items():
-            del bucket[: len(bucket) // 2]
+            if report.should_retrain():
+                self.log(
+                    f"[runtime] DRIFT ({runner.slug}): significant on "
+                    f"{report.drifted_features} (max PSI {report.max_psi:.2f}) "
+                    f"— retrain recommended: `soc-ml train --uc {runner.slug} "
+                    f"--input <recent logs>`"
+                )
+            # Reservoir rolls forward: keep the second half so the next window
+            # measures against fresher live data.
+            for feature, bucket in runner.reservoir.items():
+                del bucket[: len(bucket) // 2]
 
     # ------------------------------------------------------------------ #
     # Persistence / health
     # ------------------------------------------------------------------ #
 
     def _ckpt_path(self) -> Path:
-        return self.state_dir / f"{self.cfg.usecase}_checkpoint.json"
+        return self.state_dir / f"{self.cfg.set_key}_checkpoint.json"
 
     def _restore_checkpoint(self, source: FileSource) -> None:
         path = self._ckpt_path()
@@ -348,31 +423,31 @@ class DetectionRuntime:
 
     def _write_health(self, source: FileSource) -> None:
         uptime = time.monotonic() - self._started
-        health = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "usecase": self.cfg.usecase,
-            "mode": self.cfg.mode,
-            "bundle_version": self.bundle.version if self.bundle else None,
-            "uptime_s": round(uptime, 1),
-            "eps": round(self.stats["events"] / uptime, 1) if uptime > 0 else 0,
-            "open_windows": self.builder.open_count if self.builder else 0,
-            "ingest_failed": source.stats.failed,
-            **self.stats,
-        }
-        path = self.state_dir / f"{self.cfg.usecase}_health.json"
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        for runner in self.runners:
+            health = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "usecase": runner.slug,
+                "mode": self.cfg.mode,
+                "bundle_version": runner.bundle.version if runner.bundle else None,
+                "uptime_s": round(uptime, 1),
+                "eps": round(self.stats["events"] / uptime, 1) if uptime > 0 else 0,
+                "events": self.stats["events"],
+                "open_windows": runner.builder.open_count if runner.builder else 0,
+                "ingest_failed": source.stats.failed,
+                **runner.stats,
+            }
+            path = self.state_dir / f"{runner.slug}_health.json"
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
+            tmp.replace(path)
 
-    def _open_sink(self) -> None:
-        if self.cfg.mode != "live":
-            return
+    def _open_sink(self, runner: _UseCaseRunner) -> None:
         if self.cfg.sink_name == "file":
-            self.sink = FileSink(
-                self.cfg.data_dir / "alerts" / f"{self.cfg.usecase}.ndjson"
+            runner.sink = FileSink(
+                self.cfg.data_dir / "alerts" / f"{runner.slug}.ndjson"
             )
         else:
-            self.sink = plugin_registry.get("sink", self.cfg.sink_name)()
+            runner.sink = plugin_registry.get("sink", self.cfg.sink_name)()
 
     # ------------------------------------------------------------------ #
     # Shutdown
@@ -390,19 +465,22 @@ class DetectionRuntime:
                 pass  # not on the main thread (e.g. in tests) — fine
 
     def _shutdown(self, source: FileSource) -> None:
-        if self.builder:
-            for result in self.builder.flush():
-                self._handle(result)
+        # Drain in dependency order for the same reason the loop scores in it.
+        for runner in self.runners:
+            if runner.builder:
+                for result in runner.builder.flush():
+                    self._handle(runner, result)
         self._save_checkpoint(source)
         self._write_health(source)
-        if self.sink:
-            self.sink.flush()
-            if hasattr(self.sink, "close"):
-                self.sink.close()
-        if self._shadow_fh:
-            self._shadow_fh.close()
-        if self._digest_fh:
-            self._digest_fh.close()
+        for runner in self.runners:
+            if runner.sink:
+                runner.sink.flush()
+                if hasattr(runner.sink, "close"):
+                    runner.sink.close()
+            if runner.shadow_fh:
+                runner.shadow_fh.close()
+            if runner.digest_fh:
+                runner.digest_fh.close()
         source.close()
         self.log(
             f"[runtime] stopped — {self.stats['events']:,} events, "
