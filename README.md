@@ -7,7 +7,9 @@ for **your** website — which pages exist, which visitors are typical, when you
 users are active — and then alerts you when something breaks that pattern. No
 rules to write, no thresholds to tune.
 
-Free and open source, Apache-2.0.
+Free and open source, Apache-2.0. Part of the
+[**TLSOC**](https://github.com/sankettaware16/tlsoc) security operations
+platform — the machine-learning detection component.
 
 ---
 
@@ -56,10 +58,10 @@ more); each one plugs into the same machinery.
 
 - **Python 3.11 or newer.**
 - Your web logs in a normalized JSON format. If you use
-  [**foss-soc-engine**](../foss-soc-engine/) (the companion log parser) you
-  already have this — it writes exactly the format foss-soc-ml reads. Any shipper
-  that produces the same JSON (Filebeat, Vector, Logstash, or your own script)
-  works too.
+  [**foss-soc-engine**](https://github.com/sankettaware16/foss-soc-engine) (the
+  companion log parser) you already have this — it writes exactly the format
+  foss-soc-ml reads. Any shipper that produces the same JSON (Filebeat, Vector,
+  Logstash, or your own script) works too.
 - **Nothing else.** No Kafka, no database, no cloud service. It runs on a laptop.
 
 ---
@@ -67,8 +69,8 @@ more); each one plugs into the same machinery.
 ## Install
 
 ```bash
-git clone <this-repo>
-cd foss-soc-ml
+git clone https://github.com/sankettaware16/tlsoc-machinelearning-framework.git
+cd tlsoc-machinelearning-framework
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
@@ -181,7 +183,7 @@ Want the full design? See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 ## Project layout
 
 ```
-foss-soc-ml/
+tlsoc-machinelearning-framework/
 ├── src/soc_ml/       the framework (one folder per job: ingest, features,
 │                     models, detection, alerting, ...)
 ├── config/           settings — what to turn on, not thresholds
