@@ -20,6 +20,7 @@ from typing import Any
 
 from soc_ml.core.contracts import Alert, EntityKey
 from soc_ml.core.plugins import UseCase
+from soc_ml.detection.annotations import EntityAnnotations
 from soc_ml.explain.context import narrative, top_features
 from soc_ml.features.window_features import WindowResult
 from soc_ml.fusion.severity import severity_score
@@ -40,6 +41,10 @@ class ScoreResult:
     evidence: dict[str, Any]
     #: The finalized model-input features — used by drift monitoring.
     features: dict[str, float] = field(default_factory=dict)
+    #: Raw (uncalibrated) per-model scores. Gates never touch these (FR-22);
+    #: they exist for exports whose semantics *are* the raw value — the GBM's
+    #: isotonic P(bot|behavior) is itself the human-likeness signal.
+    per_model_raw: dict[str, float] = field(default_factory=dict)
     alert: Alert | None = None
 
     def record(self) -> dict[str, Any]:
@@ -56,13 +61,26 @@ class ScoreResult:
 
 
 class Scorer:
-    """Scores windows for one use case using one trained bundle."""
+    """Scores windows for one use case using one trained bundle.
 
-    def __init__(self, usecase_cls: type[UseCase], bundle: ModelBundle) -> None:
+    ``annotations`` is the shared cross-use-case store: before gating, the
+    entity's current annotations are injected into the window evidence (so a
+    consumer's gate can read what an upstream use case exported); after
+    scoring, whatever this use case's :meth:`UseCase.annotate` returns is
+    written back for the use cases that run after it.
+    """
+
+    def __init__(
+        self,
+        usecase_cls: type[UseCase],
+        bundle: ModelBundle,
+        annotations: EntityAnnotations | None = None,
+    ) -> None:
         self.bundle = bundle
         self.usecase_cls = usecase_cls
         self.usecase = usecase_cls(bundle.profile)
         self.slug = usecase_cls.name
+        self.annotations = annotations
 
     def score(self, result: WindowResult, *, synthetic: bool = False) -> ScoreResult | None:
         """Score one window. Returns None when the window is not applicable."""
@@ -70,9 +88,18 @@ class Scorer:
         if x is None:
             return None
 
+        entity_str = str(result.vector.entity)
+        if self.annotations is not None:
+            # What upstream use cases currently know about this entity (None
+            # is meaningful: "no signal" must stay distinguishable, NFR-09).
+            result.evidence["entity_annotations"] = self.annotations.get(entity_str)
+
+        per_model_raw = {
+            mslug: model.score(x) for mslug, model in self.bundle.models.items()
+        }
         per_model = {
-            mslug: self.bundle.calibrators[mslug].percentile(model.score(x))
-            for mslug, model in self.bundle.models.items()
+            mslug: self.bundle.calibrators[mslug].percentile(raw)
+            for mslug, raw in per_model_raw.items()
         }
         fused = self.usecase.fuse(per_model)
         fired = self.usecase.gate(fused, result.evidence)
@@ -85,9 +112,17 @@ class Scorer:
             fired=fired,
             evidence=result.evidence,
             features=x,
+            per_model_raw=per_model_raw,
         )
         if fired:
             out.alert = self._build_alert(x, result, per_model, fused, synthetic)
+
+        if self.annotations is not None:
+            exported = self.usecase.annotate(out)
+            if exported:
+                self.annotations.annotate(
+                    entity_str, exported, at=out.window_end, source=self.slug
+                )
         return out
 
     # ------------------------------------------------------------------ #

@@ -122,6 +122,29 @@ class BotDetection(UseCase):
             return [r for r in rows if r.get("bot.declared_bot", 0.0) < 0.5]
         return rows
 
+    def annotate(self, outcome: Any) -> dict[str, Any] | None:
+        """The crawler export — this use case's primary product (D-019).
+
+        * ``crawler.human_likeness`` — 1 − the GBM's isotonic P(bot|behavior)
+          (raw, deliberately: the calibrated probability *is* the signal;
+          percentiles answer a different question). GMM association is the
+          fallback when the GBM is absent.
+        * ``crawler.is_known`` — declares itself a bot, or clusters with the
+          declared ones (undeclared automation by association).
+        * ``crawler.is_verified`` — identity confirmed against the operator's
+          published ranges; downstream suppression may treat this as certain.
+        """
+        raw = outcome.per_model_raw
+        bot_p = raw.get("gbm_bot", raw.get("gmm"))
+        if bot_p is None:
+            return None
+        declared = bool(outcome.evidence.get("declared_bot", False))
+        return {
+            "crawler.human_likeness": round(1.0 - bot_p, 4),
+            "crawler.is_known": declared or raw.get("hdbscan_cluster", 0.0) > 0.0,
+            "crawler.is_verified": bool(outcome.evidence.get("verified_crawler", False)),
+        }
+
     def gate(self, fused_percentile: float, evidence: dict[str, Any]) -> bool:
         """Browser-declared + over p99.5 + sustained 30 min (FR-22/23/24).
 

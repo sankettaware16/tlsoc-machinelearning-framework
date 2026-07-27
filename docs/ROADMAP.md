@@ -179,10 +179,14 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       browser-declared windows (D-021). Spoofer canary
       (browser UA, machine behavior, 45 min) ships with the use case
 
-### 3.4 — Cross-use-case signal export (the payoff)
-- [ ] Shared per-entity annotation store: `crawler.human_likeness`,
-      `crawler.is_known`, `crawler.is_verified`
-- [ ] `bot_detection` writes it each window; the scorer exposes it to later use cases
+### 3.4 — Cross-use-case signal export (the payoff) *(done)*
+- [x] Shared per-entity annotation store (`detection/annotations.py`, bounded
+      LRU): `crawler.human_likeness`, `crawler.is_known`, `crawler.is_verified`,
+      each stamped with when and by which use case it was written
+- [x] `bot_detection` writes it each window (new `UseCase.annotate` hook; raw
+      isotonic P(bot|behavior) — the calibrated probability *is* the signal);
+      the scorer injects the entity's current annotations into window evidence
+      before gating, so later use cases read them (`entity_annotations`)
 
 ### 3.5 — web_recon consumes suppression
 - [ ] `web_recon` gate reads the crawler annotation → **suppress verified polite
