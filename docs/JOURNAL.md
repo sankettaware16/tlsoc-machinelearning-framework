@@ -10,6 +10,49 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-07-27 — Phase 3.5: crawler suppression semantics
+
+### D-022 · Suppress at the delivery layer, define "polite" as robots.txt, down-weight one band
+
+**Decision.** `web_recon`'s crawler suppression runs *after* its gate fires,
+in the scorer's fusion "suppress" stage: the alert is built, then
+`UseCase.suppression(evidence)` may mark it `suppressed_by`/`delivered=False`
+(verified **and** robots.txt-fetching crawler) or lower `severity_score` by
+one 25-point band with a `downweighted_by` reason (verified-but-impolite,
+known-cluster, or `human_likeness < 0.5`). Suppressed alerts go to a per-slug
+`*_suppressed.ndjson`, the shadow/score log carries `suppressed_by`, and the
+alert document carries the annotation snapshot the decision saw. D-019's
+"polite" is operationalized as **has fetched robots.txt** (from the entity
+memory) — a verified identity that never fetched robots.txt is down-weighted,
+not suppressed.
+
+**Why.** Suppressing inside the gate (returning False) was the rejected
+alternative: it erases the fired fact, which makes the before/after
+fire-rate measurement impossible and violates NFR-09's "every suppression
+leaves a record" — and it would entangle detection with delivery, exactly
+what the spec's fusion pipeline (calibrate → corroborate → **suppress** →
+fold → budget) separates. Firing unchanged also literally satisfies "no
+change to web_recon's learned thresholds". Robots.txt as politeness is the
+one behavior marker that is (a) already computed, (b) near-universal for
+legitimate search engines, and (c) cheap for an attacker to fake *only by
+also being polite*. The failure mode is benign: a freshly restarted runtime
+hasn't seen the fetch yet, so a verified crawler is down-weighted (still
+delivered) instead of suppressed until it refetches — degradation in the
+conservative direction.
+
+**Rules out.** Gate-level suppression; silent drops; a config list of
+"crawler IPs to ignore" (identity comes from the published-range check inside
+UC-04, never from deployment config).
+
+**Lives in.** `core/plugins.py` (`UseCase.suppression`),
+`usecases/web_recon.py`, `detection/scorer.py` (`_apply_suppression`),
+`detection/runtime.py` (`*_suppressed.ndjson`, `alerts_suppressed`),
+`evaluation/backtest.py` (report field). Exit test:
+`tests/test_web_recon_suppression.py` — one runtime, Googlebot suppressed
+with the reason on record, the browser-declared scanner still delivered.
+
+---
+
 ## 2026-07-27 — Phase 3.3: the UA-spoofing gate
 
 ### D-021 · UC-04's gate models calibrate against browser-declared windows, not all traffic

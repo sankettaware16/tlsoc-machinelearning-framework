@@ -17,9 +17,17 @@ UC-02 no explicit floor number (unlike UC-06/09/15), so per the ambiguity rule
 we take the conservative reading — journaled in D-017: at least 5 requests and
 3 distinct paths in the window before we are willing to judge at all.
 
+Crawler suppression (Phase 3.5, JOURNAL D-019): this use case consumes
+bot_detection's exported crawler annotation. The gate itself is untouched —
+detection still fires and is still recorded — but a fired alert on a
+**verified, polite** crawler (published-range identity + robots.txt fetched)
+is suppressed at the delivery layer, and a known/borderline automation entity
+is down-weighted one severity band. Every such decision is written onto the
+alert document (``suppressed_by`` / ``links``) — never silent (NFR-09). When
+bot_detection is not deployed, the annotation is absent and behaviour is
+exactly as before: the missing signal means "unknown", not "human".
+
 Not yet wired (arrives with later phases, by design):
-* known-crawler suppression + human-likeness from bot_detection (UC-04) —
-  the spec's main FP suppressor for this use case;
 * progressive alerting (first candidate "low", upgraded over a 10-min window);
 * the fleet-simultaneity / campaign-folding fusion stages.
 """
@@ -48,6 +56,9 @@ class WebRecon(UseCase):
     models = ("isolation_forest", "lof_novelty")
     default_mode = RunMode.SHADOW
     daily_alert_budget = 50
+    #: bot_detection scores first each window so its crawler annotation
+    #: exists by the time this gate's alert is considered for delivery.
+    depends_on = ("bot_detection",)
 
     # Spec constants (SPEC_DIGEST §5, UC-02). These live in code because they
     # ARE the specification — config carries policy only (FR-62).
@@ -95,3 +106,42 @@ class WebRecon(UseCase):
         if evidence.get("distinct_paths", 0) < self.MIN_DISTINCT_PATHS:
             return False
         return fused_percentile >= self.GATE_PERCENTILE
+
+    # Borderline automation: the exported human-likeness below an even-odds
+    # read. A probability midpoint, not a tunable — it lives in code like the
+    # spec's percentile gates (FR-62 concerns config, and this is not there).
+    BORDERLINE_HUMAN_LIKENESS = 0.5
+
+    def suppression(self, evidence: dict[str, Any]) -> tuple[str, str] | None:
+        """Consume the crawler annotation: suppress certain, down-weight borderline.
+
+        The gate has already fired when this runs — nothing here re-judges the
+        anomaly or adds a detection threshold; it reads an upstream *identity
+        and behavior* signal. No annotation means bot_detection is not
+        deployed or has not seen this entity: deliver normally.
+        """
+        ann = evidence.get("entity_annotations")
+        if not ann or ann.get("source") != "bot_detection":
+            return None
+        likeness = ann.get("crawler.human_likeness")
+        if ann.get("crawler.is_verified"):
+            if ann.get("crawler.robots_txt"):
+                return (
+                    "suppress",
+                    "bot_detection: verified search-engine crawler "
+                    f"(robots.txt respected, human_likeness {likeness})",
+                )
+            # Verified identity but impolite behavior — keep the alert, softer.
+            return (
+                "downweight",
+                "bot_detection: verified crawler ignoring robots.txt "
+                f"(human_likeness {likeness})",
+            )
+        if ann.get("crawler.is_known") or (
+            likeness is not None and likeness < self.BORDERLINE_HUMAN_LIKENESS
+        ):
+            return (
+                "downweight",
+                f"bot_detection: known/borderline automation (human_likeness {likeness})",
+            )
+        return None

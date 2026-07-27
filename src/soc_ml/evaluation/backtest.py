@@ -139,12 +139,13 @@ def run_backtest(
         server = bundle.profile.dominant_server() or "_"
         canary = uc_cls.canary(server, cutoff + timedelta(seconds=60))
 
-    scored = alerts_delivered = alerts_raw = 0
+    scored = alerts_delivered = alerts_raw = alerts_suppressed = 0
     canary_windows = canary_fired = 0
     top_alerts: list[tuple[float, dict[str, Any]]] = []
 
     def handle(result) -> None:
-        nonlocal scored, alerts_delivered, alerts_raw, canary_windows, canary_fired
+        nonlocal scored, alerts_delivered, alerts_raw, alerts_suppressed
+        nonlocal canary_windows, canary_fired
         is_canary = is_canary_ip(result.vector.entity.ip)
         outcome = scorer.score(result, synthetic=is_canary)
         if outcome is None:
@@ -156,6 +157,11 @@ def run_backtest(
             return
         alerts_raw += 1
         canary_fired += int(is_canary)
+        if not outcome.alert.delivered:
+            # Upstream-suppressed: fired stays counted, delivery withheld —
+            # the before/after suppression measure in one report.
+            alerts_suppressed += 1
+            return
         decision = dedup.decide(outcome.alert)
         if decision.deliver:
             alerts_delivered += 1
@@ -201,6 +207,7 @@ def run_backtest(
             "days": round(score_days, 3),
             "alerts_raw": alerts_raw,
             "alerts_delivered": alerts_delivered,
+            "alerts_suppressed": alerts_suppressed,
             "folded": dedup.stats["folded"],
             "delivered_per_day_per_server": round(
                 (alerts_delivered - canary_delivered(dedup, canary_fired))

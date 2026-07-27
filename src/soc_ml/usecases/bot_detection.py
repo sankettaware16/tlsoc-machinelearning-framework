@@ -143,6 +143,11 @@ class BotDetection(UseCase):
             "crawler.human_likeness": round(1.0 - bot_p, 4),
             "crawler.is_known": declared or raw.get("hdbscan_cluster", 0.0) > 0.0,
             "crawler.is_verified": bool(outcome.evidence.get("verified_crawler", False)),
+            # The politeness marker consumers pair with is_verified: a real
+            # search-engine crawler fetches robots.txt; a "verified" client
+            # that never has is treated more cautiously downstream.
+            "crawler.robots_txt": outcome.features.get("bot.robots_txt_fetched", 0.0)
+            > 0.0,
         }
 
     def gate(self, fused_percentile: float, evidence: dict[str, Any]) -> bool:

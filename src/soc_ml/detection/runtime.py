@@ -143,11 +143,13 @@ class _UseCaseRunner:
         self.sink: Sink | None = None
         self.shadow_fh = None
         self.digest_fh = None
+        self.suppressed_fh = None
         self.stats = {
             "windows": 0,
             "alerts_delivered": 0,
             "alerts_folded": 0,
             "alerts_digested": 0,
+            "alerts_suppressed": 0,
             "last_drift_band": "unknown",
         }
 
@@ -191,6 +193,7 @@ class DetectionRuntime:
             "alerts_delivered": 0,
             "alerts_folded": 0,
             "alerts_digested": 0,
+            "alerts_suppressed": 0,
         }
 
     # ------------------------------------------------------------------ #
@@ -332,6 +335,13 @@ class DetectionRuntime:
             self._shadow_record(runner, outcome)
 
     def _deliver(self, runner: _UseCaseRunner, outcome) -> None:
+        # 0. An upstream-suppressed alert never reaches the queue — but it is
+        #    written, with its reason, to the per-slug suppressed log (NFR-09).
+        if not outcome.alert.delivered:
+            self._record_suppressed(runner, outcome.alert)
+            runner.stats["alerts_suppressed"] += 1
+            self.stats["alerts_suppressed"] += 1
+            return
         # 1. Fold repeats of the same entity into one open alert (dedup).
         decision = runner.dedup.decide(outcome.alert)
         if not decision.deliver:
@@ -359,6 +369,21 @@ class DetectionRuntime:
                 "entity": str(alert.entity),
                 "severity": alert.severity.value,
                 "reason": "over daily budget — folded into digest",
+                "narrative": alert.narrative,
+            }) + "\n"
+        )
+
+    def _record_suppressed(self, runner: _UseCaseRunner, alert) -> None:
+        if runner.suppressed_fh is None:
+            path = self.state_dir / f"{runner.slug}_suppressed.ndjson"
+            runner.suppressed_fh = path.open("a", encoding="utf-8")
+        runner.suppressed_fh.write(
+            json.dumps({
+                "@timestamp": alert.timestamp.isoformat(),
+                "usecase": alert.usecase,
+                "entity": str(alert.entity),
+                "severity": alert.severity.value,
+                "suppressed_by": alert.suppressed_by,
                 "narrative": alert.narrative,
             }) + "\n"
         )
@@ -492,6 +517,8 @@ class DetectionRuntime:
                 runner.shadow_fh.close()
             if runner.digest_fh:
                 runner.digest_fh.close()
+            if runner.suppressed_fh:
+                runner.suppressed_fh.close()
         source.close()
         self.log(
             f"[runtime] stopped — {self.stats['events']:,} events, "
