@@ -98,9 +98,13 @@ def test_html_counts_as_unknown_only_if_never_served() -> None:
 
 
 def test_all_declared_features_are_always_present() -> None:
+    from soc_ml.features import BOT_DETECTION_FEATURES
+
     builder = WindowFeatureBuilder(trained_profile())
     (result,) = collect(builder, [ev()])
-    assert set(result.vector.values) == set(WEB_RECON_FEATURES)
+    assert set(result.vector.values) == set(WEB_RECON_FEATURES) | set(
+        BOT_DETECTION_FEATURES
+    )
 
 
 def test_windows_split_by_entity_and_bucket() -> None:

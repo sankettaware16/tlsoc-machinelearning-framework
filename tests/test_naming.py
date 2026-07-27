@@ -59,10 +59,10 @@ def test_model_and_sink_names_are_slugs() -> None:
 
 
 def test_feature_names_are_namespaced() -> None:
-    from soc_ml.features import WEB_RECON_FEATURES
+    from soc_ml.features import BOT_DETECTION_FEATURES, WEB_RECON_FEATURES
 
     pattern = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
-    for feature in WEB_RECON_FEATURES:
+    for feature in WEB_RECON_FEATURES + BOT_DETECTION_FEATURES:
         assert pattern.match(feature), (
             f"feature {feature!r} must be <group>.<name> snake_case"
         )
