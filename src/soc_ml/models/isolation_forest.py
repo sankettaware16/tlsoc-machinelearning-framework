@@ -52,6 +52,24 @@ class IsolationForestModel(Model):
         row = np.array([[x.get(f, 0.0) for f in self._features]], dtype=float)
         return float(-self._model.score_samples(row)[0])
 
+    def score_batch(self, rows: list[dict[str, float]]) -> list[float]:
+        """Score many rows in ONE sklearn call — vectorized, not a per-row loop.
+
+        Training scores tens of thousands of windows twice (hygiene ranking +
+        calibration); doing that one row at a time makes training minutes-to-hours
+        slower than it needs to be.
+        """
+        import numpy as np
+
+        if self._model is None:
+            raise RuntimeError("isolation_forest: score_batch() before fit()/load()")
+        if not rows:
+            return []
+        matrix = np.array(
+            [[x.get(f, 0.0) for f in self._features] for x in rows], dtype=float
+        )
+        return [float(v) for v in -self._model.score_samples(matrix)]
+
     def save(self, path: Path) -> None:
         import joblib
 
