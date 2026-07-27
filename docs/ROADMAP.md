@@ -155,13 +155,19 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       "free precision" identity allowlist (not a data threshold, FR-62 safe);
       carried in window *evidence*, never as a model feature
 
-### 3.2 — bot_detection models
-- [ ] `models/gbm.py` — gradient-boosted classifier: predict `declared_bot`
-      from **behavior only**, isotonic-calibrated → P(bot | behavior)
-- [ ] `models/gmm.py` — human-likeness GMM (BIC-selected) over daily vectors
-- [ ] `models/hdbscan_cluster.py` — known-crawler clustering (optional `cluster`
-      extra; degrade gracefully if `hdbscan` absent, NFR-08)
-- [ ] all with `score_batch` (perf) + `save`/`load` + explain hooks
+### 3.2 — bot_detection models *(done)*
+- [x] `models/gbm.py` — gradient-boosted classifier: predict `declared_bot`
+      from **behavior only** (label + `ua.*` structurally excluded — leakage),
+      isotonic-calibrated → P(bot | behavior); degrades to raw probabilities /
+      class prevalence when the minority class is too thin
+- [x] `models/gmm.py` — BIC-selected GMM; bot-likeness = soft component
+      membership weighted by each component's declared-bot share
+      (human-likeness = 1 − score)
+- [x] `models/hdbscan_cluster.py` — known-crawler clustering (optional `cluster`
+      extra; `Model.available()` + the shared factory helper skip it with a
+      warning when `hdbscan` is absent, NFR-08)
+- [x] all with `score_batch` (perf) + `save`/`load`; hygiene clipping now
+      skips binary features so a rare label can't be zeroed by p99.9
 
 ### 3.3 — bot_detection use case + gate
 - [ ] `usecases/bot_detection.py` (class `BotDetection`, slug `bot_detection`,

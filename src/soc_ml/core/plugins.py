@@ -50,6 +50,7 @@ __all__ = [
     "Sink",
     "PluginRegistry",
     "registry",
+    "usecase_model_factories",
 ]
 
 
@@ -155,6 +156,16 @@ class Model(Plugin):
     #: True for online/incremental models (Half-Space Trees, BOCPD, EWMA) that
     #: learn per-event and need no batch corpus.
     incremental: ClassVar[bool] = False
+
+    @classmethod
+    def available(cls) -> bool:
+        """Can this model run here? Override for optional-dependency models.
+
+        A model backed by an extra (``hdbscan``, ``torch``, ...) returns False
+        when its import is missing; callers then skip it — a documented
+        degradation, never a crash (NFR-08).
+        """
+        return True
 
     @abc.abstractmethod
     def fit(self, X: Iterable[dict[str, float]]) -> None:
@@ -462,6 +473,30 @@ class PluginRegistry:
 
 
 registry = PluginRegistry()
+
+
+def usecase_model_factories(uc_cls: type[UseCase]) -> dict[str, type[Model]]:
+    """Model classes a use case declares, minus unavailable optional ones.
+
+    The one place train/backtest/run build their factory maps, so an optional
+    model whose extra is not installed degrades identically everywhere: it is
+    skipped with a warning (visible degradation, NFR-08) at fit *and* at load —
+    a bundle trained with the extra still serves without it, just without that
+    model's contribution. No model available at all is the caller's error to
+    raise loudly.
+    """
+    factories: dict[str, type[Model]] = {}
+    for mslug in uc_cls.models:
+        cls = registry.get("model", mslug)
+        if not cls.available():
+            log.warning(
+                "%s: model %r unavailable (optional dependency missing) — "
+                "continuing without it (NFR-08)",
+                uc_cls.name, mslug,
+            )
+            continue
+        factories[mslug] = cls
+    return factories
 
 _KINDS.update(
     {

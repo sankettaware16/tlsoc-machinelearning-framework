@@ -447,7 +447,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     """Train a model bundle from historical logs and register it (FR-53)."""
     from datetime import datetime
 
-    from soc_ml.core.plugins import registry as plugin_registry
+    from soc_ml.core.plugins import usecase_model_factories
     from soc_ml.ingest.file import FileSource
     from soc_ml.registry.store import ModelRegistry
     from soc_ml.training.trainer import TrainingError, train_bundle
@@ -457,7 +457,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     uc_cls = _resolve_usecase(slug)
     if uc_cls is None:
         return 3
-    factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
+    factories = usecase_model_factories(uc_cls)
 
     def stream():
         src = FileSource(args.input)

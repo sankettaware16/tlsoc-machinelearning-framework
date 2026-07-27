@@ -23,7 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from soc_ml.alerting.file_sink import FileSink
-from soc_ml.core.plugins import registry as plugin_registry
+from soc_ml.core.plugins import (
+    registry as plugin_registry,
+    usecase_model_factories,
+)
 from soc_ml.core.contracts import Event
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
@@ -77,7 +80,7 @@ def run_backtest(
         uc_cls = plugin_registry.get("usecase", usecase)
     except LookupError as exc:
         raise ValueError(str(exc)) from None
-    factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
+    factories = usecase_model_factories(uc_cls)
     out_dir = Path(out_dir)
 
     # ---- pass 0: span -> cutoff ---------------------------------------- #

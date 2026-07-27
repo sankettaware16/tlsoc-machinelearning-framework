@@ -46,7 +46,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from soc_ml.alerting.file_sink import FileSink
-from soc_ml.core.plugins import Sink, UseCase, registry as plugin_registry
+from soc_ml.core.plugins import (
+    Sink,
+    UseCase,
+    registry as plugin_registry,
+    usecase_model_factories,
+)
 from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
@@ -123,7 +128,7 @@ class _UseCaseRunner:
     def __init__(self, uc_cls: type[UseCase], daily_budget_override: int | None) -> None:
         self.uc_cls = uc_cls
         self.slug = uc_cls.name
-        self.factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
+        self.factories = usecase_model_factories(uc_cls)
         self.bundle: ModelBundle | None = None
         self.scorer: Scorer | None = None
         self.builder: WindowFeatureBuilder | None = None
