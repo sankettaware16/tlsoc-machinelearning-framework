@@ -286,6 +286,7 @@ class WindowFeatureBuilder:
         evidence = {
             "window_start": w.start.isoformat(),
             "window_end": (w.start + timedelta(seconds=self.window_s)).isoformat(),
+            "entity": str(w.entity),
             "event_count": n,
             "distinct_paths": len(w.paths),
             "distinct_paths_capped": w.paths_capped,

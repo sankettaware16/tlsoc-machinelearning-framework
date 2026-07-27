@@ -290,6 +290,21 @@ class UseCase(Plugin):
         """
         return max(calibrated.values())
 
+    def calibration_rows(
+        self, model_slug: str, rows: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        """The sub-population whose scores define a model's percentile reference.
+
+        Default: every training row. Override when "unusual" must be judged
+        against a specific population — bot_detection calibrates P(bot)
+        against *browser-declared* windows, because "more bot-like than 99.5%
+        of a population that is one-fifth actual Googlebot" is a bar no
+        spoofer can clear; the spoofing question is "more bot-like than the
+        browsers here". Still learned, still per server: FR-22 intact.
+        The trainer falls back to all rows when the subset is too small.
+        """
+        return rows
+
     @abc.abstractmethod
     def gate(self, fused_percentile: float, evidence: dict[str, Any]) -> bool:
         """Decide whether this calibrated, fused score is alert-worthy.

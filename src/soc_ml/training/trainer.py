@@ -114,15 +114,30 @@ def train_bundle(
     cleaned, dropped = _drop_most_anomalous(clipped, model_factories)
 
     # -- fit models + calibrators ---------------------------------------- #
+    # Iterate the *factories*, not the class declaration: an optional model
+    # whose dependency is missing was already skipped there (NFR-08).
+    if not model_factories:
+        raise TrainingError(f"{slug}: no available model to fit")
     models: dict[str, Any] = {}
     calibrators: dict[str, PercentileCalibrator] = {}
-    for mslug in usecase_cls.models:
+    for mslug, factory in model_factories.items():
         log(f"  fitting {mslug} ...")
-        model = model_factories[mslug]()
+        model = factory()
         model.fit(cleaned)
         models[mslug] = model
+        # Percentile reference: the use case may narrow the population this
+        # model's scores are compared against (bot_detection: browser-declared
+        # windows). Too small a subset falls back to everything — a thin
+        # reference is worse than a broad one.
+        reference_rows = usecase.calibration_rows(mslug, cleaned)
+        if len(reference_rows) < _MIN_TRAIN_WINDOWS:
+            log(f"    calibration subset too small ({len(reference_rows)}) — "
+                "using all windows")
+            reference_rows = cleaned
         # Batch-score for calibration — one vectorized call, not a per-row loop.
-        calibrators[mslug] = PercentileCalibrator().fit(model.score_batch(cleaned))
+        calibrators[mslug] = PercentileCalibrator().fit(
+            model.score_batch(reference_rows)
+        )
     log("done fitting; writing bundle")
 
     metadata = {
@@ -142,6 +157,9 @@ def train_bundle(
             "windows_dropped": dropped,
         },
         "models": {m: type(models[m]).__name__ for m in models},
+        # Declared but not fitted (optional dependency missing) — the visible
+        # record of a degraded bundle (NFR-08).
+        "models_skipped": sorted(set(usecase_cls.models) - set(model_factories)),
         "gate": {
             "percentile": getattr(usecase_cls, "GATE_PERCENTILE", None),
             "min_events": getattr(usecase_cls, "MIN_EVENTS", None),

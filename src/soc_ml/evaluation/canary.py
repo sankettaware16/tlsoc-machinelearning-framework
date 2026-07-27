@@ -16,7 +16,16 @@ from datetime import datetime, timedelta
 
 from soc_ml.core.contracts import Event, Observer
 
-__all__ = ["CANARY_IP", "CANARY_NET_PREFIX", "CANARY_UA", "canary_events", "is_canary_ip"]
+__all__ = [
+    "CANARY_IP",
+    "CANARY_NET_PREFIX",
+    "CANARY_UA",
+    "SPOOFER_CANARY_IP",
+    "SPOOFER_CANARY_UA",
+    "canary_events",
+    "is_canary_ip",
+    "spoofer_canary_events",
+]
 
 CANARY_IP = "198.51.100.99"  # RFC 5737 TEST-NET-2 — never a real client
 #: Every use case's canary must source from this /24 (TEST-NET-2), so canary
@@ -37,6 +46,53 @@ _PATH_PATTERNS = (
     "/.git/objects/{i:03d}",
     "/test/debug_{i:03d}.tar",
 )
+
+# UA-spoofer canary (UC-04): declares a stock desktop browser, behaves like a
+# harvester — metronomic cadence, no referrers, no page assets, a tiny path
+# rotation, fixed-size responses. Long enough to satisfy the spec's
+# "sustained >= 30 min" gate with margin.
+SPOOFER_CANARY_IP = "198.51.100.77"  # TEST-NET-2, distinct from CANARY_IP
+SPOOFER_CANARY_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+)
+_SPOOFER_PATHS = ("/catalog/items", "/api/list", "/export/data")
+
+
+def spoofer_canary_events(
+    server: str,
+    start: datetime,
+    *,
+    duration_min: int = 45,
+    period_s: int = 2,
+) -> list[Event]:
+    """Browser-declared, bot-behaving traffic — UC-04's detection check."""
+    observer = Observer(server=server, source_program="canary")
+    events: list[Event] = []
+    for i in range(duration_min * 60 // period_s):
+        ts = start + timedelta(seconds=i * period_s)
+        path = _SPOOFER_PATHS[i % len(_SPOOFER_PATHS)]
+        events.append(
+            Event(
+                timestamp=ts,
+                observer=observer,
+                source_ip=SPOOFER_CANARY_IP,
+                geo_country_iso="ZZ",
+                http_method="GET",
+                http_referrer=None,
+                status_code=200,
+                body_bytes=512,
+                url_path=path,
+                url_query=None,
+                user_agent=SPOOFER_CANARY_UA,
+                original=(
+                    f'{SPOOFER_CANARY_IP} - - '
+                    f'[{ts.strftime("%d/%b/%Y:%H:%M:%S +0000")}] '
+                    f'"GET {path} HTTP/1.1" 200 512 "-" "{SPOOFER_CANARY_UA}" [canary]'
+                ),
+            )
+        )
+    return events
 
 
 def canary_events(

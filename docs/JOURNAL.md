@@ -10,6 +10,38 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-07-27 — Phase 3.3: the UA-spoofing gate
+
+### D-021 · UC-04's gate models calibrate against browser-declared windows, not all traffic
+
+**Decision.** A new `UseCase.calibration_rows(model_slug, rows)` hook lets a
+use case narrow the population whose scores define a model's percentile
+reference. `bot_detection` calibrates `gbm_bot`/`gmm` against
+**browser-declared** windows only; `hdbscan_cluster` keeps the full
+population. The trainer falls back to all rows when the subset is thinner
+than the minimum training-window floor.
+
+**Why.** The spec's gate is "browser-UA entity with P(bot|behavior) ≥ p99.5
+sustained ≥ 30 min". Calibrated over *all* windows, the p99.5 bar rises with
+crawler prevalence: on a server where a fifth of traffic is actual Googlebot
+scoring P(bot) ≈ 1, a spoofer at 0.99 lands near the 80th percentile forever —
+the gate could structurally never fire, and the failure would be silent. The
+spoofing question is "more bot-like than the *browsers* here", so that is the
+correct reference population. The rejected alternative — gating on the raw
+isotonic probability (≥ 0.995) — reads naturally but breaks FR-22
+(percentiles, never raw scores) and loses per-server comparability.
+
+**Rules out.** Gating any UC-04 alert on raw probabilities; "fixing" the
+dilution by tuning the percentile constant per deployment (that would be a
+config threshold, FR-62).
+
+**Lives in.** `core/plugins.py` (`UseCase.calibration_rows`),
+`training/trainer.py`, `usecases/bot_detection.py`. Verified end to end in
+`tests/test_bot_detection_usecase.py` (the spoofer canary fires on windows
+6-10 of 10 — the sustained gate exactly).
+
+---
+
 ## 2026-07-27 — Phase 3.0: the multi-use-case runtime
 
 ### D-020 · One runtime, N use cases — each with its own feature builder, checkpoint keyed by the set
