@@ -27,19 +27,17 @@ from soc_ml.core.plugins import registry as plugin_registry
 from soc_ml.core.contracts import Event
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
-from soc_ml.evaluation.canary import CANARY_IP, canary_events
+from soc_ml.evaluation.canary import is_canary_ip
 from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.ingest.file import FileSource
 from soc_ml.registry.store import ModelRegistry
 from soc_ml.training.trainer import TrainingError, train_bundle
-from soc_ml.usecases.web_recon import WebRecon
 
-# ensure model plugins are registered
+# ensure model and use-case plugins are registered
 import soc_ml.models  # noqa: F401  isort: skip
+import soc_ml.usecases  # noqa: F401  isort: skip
 
 __all__ = ["run_backtest"]
-
-_USECASES = {"web_recon": WebRecon}
 
 
 def _events(input_path: str | Path, limit: int) -> Iterator[Event]:
@@ -75,9 +73,10 @@ def run_backtest(
     inject_canary: bool = True,
     top_n: int = 5,
 ) -> dict[str, Any]:
-    uc_cls = _USECASES.get(usecase)
-    if uc_cls is None:
-        raise ValueError(f"unknown use case {usecase!r}")
+    try:
+        uc_cls = plugin_registry.get("usecase", usecase)
+    except LookupError as exc:
+        raise ValueError(str(exc)) from None
     factories = {m: plugin_registry.get("model", m) for m in uc_cls.models}
     out_dir = Path(out_dir)
 
@@ -128,8 +127,10 @@ def run_backtest(
 
     canary: list[Event] = []
     if inject_canary:
+        # Each use case ships its own known-bad burst; an empty list means "no
+        # canary yet" and the detection check is skipped, not failed.
         server = bundle.profile.dominant_server() or "_"
-        canary = canary_events(server, cutoff + timedelta(seconds=60))
+        canary = uc_cls.canary(server, cutoff + timedelta(seconds=60))
 
     scored = alerts_delivered = alerts_raw = 0
     canary_windows = canary_fired = 0
@@ -137,7 +138,7 @@ def run_backtest(
 
     def handle(result) -> None:
         nonlocal scored, alerts_delivered, alerts_raw, canary_windows, canary_fired
-        is_canary = result.vector.entity.ip == CANARY_IP
+        is_canary = is_canary_ip(result.vector.entity.ip)
         outcome = scorer.score(result, synthetic=is_canary)
         if outcome is None:
             return

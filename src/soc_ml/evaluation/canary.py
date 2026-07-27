@@ -16,10 +16,18 @@ from datetime import datetime, timedelta
 
 from soc_ml.core.contracts import Event, Observer
 
-__all__ = ["CANARY_IP", "CANARY_UA", "canary_events"]
+__all__ = ["CANARY_IP", "CANARY_NET_PREFIX", "CANARY_UA", "canary_events", "is_canary_ip"]
 
 CANARY_IP = "198.51.100.99"  # RFC 5737 TEST-NET-2 — never a real client
+#: Every use case's canary must source from this /24 (TEST-NET-2), so canary
+#: windows are recognizable regardless of which use case injected them.
+CANARY_NET_PREFIX = "198.51.100."
 CANARY_UA = "Mozilla/5.0 (compatible; SOC-ML-Canary/1.0)"
+
+
+def is_canary_ip(ip: str | None) -> bool:
+    """True when the address belongs to the reserved canary net (TEST-NET-2)."""
+    return bool(ip) and ip.startswith(CANARY_NET_PREFIX)
 
 _PATH_PATTERNS = (
     "/backup/site_{i:03d}.sql",

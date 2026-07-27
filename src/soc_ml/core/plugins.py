@@ -25,6 +25,7 @@ import importlib.metadata
 import importlib.util
 import logging
 from collections.abc import Iterable, Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
@@ -242,6 +243,24 @@ class UseCase(Plugin):
     default_mode: ClassVar[RunMode] = RunMode.SHADOW
     #: Daily delivery budget. Delivery only — every score is still recorded.
     daily_alert_budget: ClassVar[int] = 50
+    #: Slugs of use cases whose exported per-entity signals this one consumes.
+    #: The runtime scores dependencies first within each window, so their
+    #: annotations exist by the time this use case's gate runs. A dependency
+    #: that is not deployed is skipped, never fatal — the consumer must treat
+    #: the missing signal as "unknown", visibly (NFR-09).
+    depends_on: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def canary(cls, server: str, start: datetime) -> list[Event]:
+        """Synthetic known-bad events for this use case's backtest canary.
+
+        Injected into the **scoring stream only**, never training (FR-58).
+        Empty (the default) means this use case ships no canary yet and the
+        backtest skips the detection check rather than failing it. Canary
+        sources must use RFC 5737 TEST-NET-2 addresses (198.51.100.0/24) so
+        they are recognizable and can never collide with real traffic.
+        """
+        return []
 
     @abc.abstractmethod
     def vector(self, fv: FeatureVector) -> dict[str, float] | None:

@@ -10,6 +10,59 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-07-27 — Phase 3.0: the multi-use-case runtime
+
+### D-020 · One runtime, N use cases — each with its own feature builder, checkpoint keyed by the set
+
+**Decision.** The runtime scores every configured use case per window in
+dependency order (`UseCase.depends_on`, topologically sorted, deterministic).
+Three specifics worth defending:
+
+1. **Each use case gets its own `WindowFeatureBuilder`,** fed the same event
+   stream, rather than one shared builder feeding all scorers.
+2. **The shared ingest checkpoint is keyed by the sorted use-case set**
+   (`bot_detection+web_recon_checkpoint.json`); everything else on disk —
+   health, shadow, digest, drift, alerts — is keyed per slug.
+3. **The backtest canary became a `UseCase.canary()` classmethod** (empty =
+   check skipped); canary sources must come from TEST-NET-2 so canary windows
+   are recognizable regardless of which use case injected them.
+
+**Why.**
+1. Features are profile-dependent (`path_idf`, `ua_rarity`, served
+   extensions), and each bundle carries the profile it was *trained* with —
+   scoring UC-A's windows through UC-B's profile silently changes the
+   distribution the calibrators were fitted on, which is exactly the class of
+   bug percentile calibration exists to prevent (FR-22). A shared builder is
+   the FR-11 ideal, but FR-11's "compute once, share" presumes a shared
+   profile, which arrives only when training becomes joint. Duplicate folding
+   costs counters-per-event × N use cases — noise at our event rates — and
+   because every builder sees the same stream, their windows close on the
+   same event, which is what makes "exporter scores before consumer within
+   the same bucket" (D-019's ordering requirement) hold structurally.
+2. The checkpoint is a property of *one reader position*, which belongs to
+   the runtime instance, not to any single use case. Keying it per-slug would
+   desync N cursors over one stream; keying it by the set means a changed set
+   restarts the read (safe — shadow rescoring is cheap) and the existing
+   single-`web_recon` elkcc deployment keeps its checkpoint name and resumes
+   seamlessly after upgrade.
+3. The canary was hardcoded to web_recon's enumeration burst; run against
+   `bot_detection` it would either fail every backtest (canary "missed") or
+   need a slug-keyed map — the exact pattern 3.0 removes. A per-class hook
+   keeps the backtest fully generic and gives each use case an obvious place
+   to ship its own known-bad burst (FR-58 still holds: scoring stream only).
+
+**Rules out.** A single shared feature builder until profiles are trained
+jointly; per-use-case ingest checkpoints; slug-keyed canary/use-case maps
+anywhere in `cli`/`evaluation`/`detection` (the plugin registry is the only
+resolver); a canary sourced outside 198.51.100.0/24.
+
+**Lives in.** `detection/runtime.py` (`_UseCaseRunner`, `RuntimeConfig.set_key`),
+`usecases/__init__.py` (`dependency_order`), `core/plugins.py`
+(`UseCase.depends_on`, `UseCase.canary`), `evaluation/backtest.py`,
+`evaluation/canary.py` (`is_canary_ip`), `tests/test_multi_usecase_runtime.py`.
+
+---
+
 ## 2026-07-27 — UC-04 (bot_detection) design
 
 ### D-019 · bot_detection workflow — a detector whose main product is a signal for other detectors
