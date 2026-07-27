@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Learned artifacts and runtime state — NEVER commit (may contain real IPs)
+data/models/*
+data/baselines/*
+data/reports/*
+data/state/*
+data/alerts/*
+!data/**/.gitkeep
+
+# Real log data — NEVER commit (contains real IPs / PII). Only synthetic
+# fixtures under tests/fixtures/ are tracked.
+*realdata*.json
+*.ndjson
+/log_samples/
+**/log_samples/
+
+# Local config overrides & secrets
+config/*.local.yaml
+.env
+
+# Logs
+logs/
+*.log
+

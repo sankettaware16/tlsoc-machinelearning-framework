@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foss-soc-ml"
+version = "0.1.0.dev0"
+description = "Self-learning behavioral analytics and anomaly detection for web traffic in a SOC"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "foss-soc-ml contributors" }]
+keywords = ["security", "soc", "siem", "anomaly-detection", "machine-learning", "ecs"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+]
+
+# The standalone profile must install and run with no infrastructure (NFR-07),
+# so the core dependency set is deliberately small.
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+    "river>=0.21",
+    "pyyaml>=6.0",
+    "orjson>=3.9",
+]
+
+[project.optional-dependencies]
+# Every extra degrades gracefully when absent — a missing optional dependency
+# disables its feature with a health event, never a crash (NFR-08).
+deep = ["torch>=2.2"]                                   # autoencoders, VAEs
+cluster = ["hdbscan>=0.8.33", "datasketch>=1.6"]        # HDBSCAN, MinHash/HLL
+timeseries = ["statsmodels>=0.14", "ruptures>=1.1", "hmmlearn>=0.3"]
+kafka = ["confluent-kafka>=2.3"]
+redis = ["redis>=5.0"]
+elastic = ["elasticsearch>=8.12"]
+mlflow = ["mlflow>=2.11"]
+dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.3", "mypy>=1.9"]
+all = ["foss-soc-ml[deep,cluster,timeseries,kafka,redis,elastic,mlflow]"]
+
+[project.scripts]
+soc-ml = "soc_ml.cli.main:main"
+
+# Third-party plugins publish under these groups; the registry discovers them
+# alongside the drop-in `plugins/` directory.
+[project.entry-points."soc_ml.sources"]
+[project.entry-points."soc_ml.features"]
+[project.entry-points."soc_ml.models"]
+[project.entry-points."soc_ml.usecases"]
+[project.entry-points."soc_ml.states"]
+[project.entry-points."soc_ml.sinks"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = [
+    # joblib/NumPy 2.5 deprecation raised deep inside sklearn model pickling —
+    # not ours to fix and not actionable here.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["soc_ml"]
+ignore_missing_imports = true
