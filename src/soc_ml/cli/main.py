@@ -408,17 +408,19 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     print(f"train         : {t['events']:,} events -> {t['windows']:,} windows "
           f"(hygiene dropped {t['hygiene_dropped']})")
     print(f"score         : {s['windows']:,} windows over {s['days']} days")
-    print(f"alerts        : {s['alerts']} real  "
-          f"({s['alerts_per_day_per_server']}/day/server, budget {s['fp_budget_per_day_per_server']})")
+    print(f"alerts        : {s['alerts_delivered']} delivered "
+          f"({s['delivered_per_day_per_server']}/day/server, budget "
+          f"{s['fp_budget_per_day_per_server']}); {s['alerts_raw']} raw, "
+          f"{s['folded']} folded by dedup")
     if c["injected"]:
         verdict = "DETECTED" if c["detected"] else "MISSED"
         print(f"canary        : {verdict}  "
-              f"({c['alerts']} alert(s) from {c['windows_seen']} canary window(s))")
+              f"({c['fired']} firing window(s) of {c['windows_seen']} canary window(s))")
     if report["top_alerts"]:
         print("\ntop alerts:")
         for entry in report["top_alerts"]:
             print(f"  [{entry['severity']}] {entry['narrative']}")
-    print(f"\nartifacts     : {report['artifacts']['models']}")
+    print(f"\nartifacts     : {report['artifacts']['bundle']}")
     print(f"report        : {report['artifacts']['alerts']}")
 
     if c["injected"] and not c["detected"]:
