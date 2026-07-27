@@ -1,0 +1,29 @@
+# foss-soc-ml — web_recon live detection service
+# Copy to /etc/systemd/system/, edit the paths + User, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now foss-soc-ml
+[Unit]
+Description=foss-soc-ml behavioral detection (web_recon)
+After=network.target
+# If the parser runs on this box, start after it:
+# After=foss-soc.service
+
+[Service]
+Type=simple
+User=soc
+Group=soc
+WorkingDirectory=/opt/foss-soc-ml
+# Tail the parser's ECS output; deliver alerts (start with --mode shadow).
+ExecStart=/opt/foss-soc-ml/.venv/bin/soc-ml run \
+    --input /var/log/soc_output/ \
+    --out /opt/foss-soc-ml/data \
+    --mode live
+# Unbuffered so health/first-run logs reach journalctl immediately.
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+# Clean drain on stop/restart: SIGTERM -> flush windows, checkpoint, exit.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

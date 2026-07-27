@@ -1,0 +1,135 @@
+# foss-soc-ml — default configuration
+#
+# This file carries POLICY ONLY. It must never contain a detection threshold.
+#
+#   Policy (belongs here):  profile, run modes, alert budgets, retraining
+#                           cadence, toggles, paths, connection details.
+#   Data thresholds (never here): any number compared against observed traffic —
+#                           "alert above 50 req/min", "flag paths deeper than 6".
+#                           Those are LEARNED from the Environment Profile.
+#
+# The test: would this number have to change at a different organisation?
+# If yes, it must be learned. `soc-ml lint-config` enforces this (FR-62).
+
+# --------------------------------------------------------------------------- #
+# Deployment profile — how much infrastructure is available
+#   standalone : no infra. Files + SQLite + local registry.  <-- default
+#   cluster    : Kafka + Redis
+#   enterprise : + MLflow, Elasticsearch
+# --------------------------------------------------------------------------- #
+profile: standalone
+
+# Where the parser writes its ECS JSON output.
+input_dir: "/var/log/soc_output/"
+
+data_dir: "data"       # learned artifacts (gitignored)
+plugin_dir: "plugins"  # drop-in plugins
+
+# --------------------------------------------------------------------------- #
+# Run modes
+#   offline : historical input, results to a report only
+#   shadow  : live input, scored and recorded, never delivered  <-- safe default
+#   live    : scored and delivered to sinks
+#
+# Per-use-case overrides are how staged cold-start is expressed: Tier-1 goes
+# live while Tier-2 keeps observing. See SPEC_DIGEST §8.
+# --------------------------------------------------------------------------- #
+modes:
+  default: shadow
+  overrides: {}
+    # UC-02: live
+    # UC-04: live
+
+# --------------------------------------------------------------------------- #
+# Grouping defaults — NOT detection thresholds.
+# The idle gap decides where one visit ends and the next begins; it does not
+# decide whether anything is suspicious.
+# --------------------------------------------------------------------------- #
+session_idle_gap_s: 1800   # 30 minutes
+windows: ["1m", "5m", "30m", "24h"]
+
+# --------------------------------------------------------------------------- #
+# Live runtime (soc-ml run) — operational knobs, all policy (not thresholds).
+# --------------------------------------------------------------------------- #
+runtime:
+  poll_interval_s: 2        # how often to check the input dir for new data
+  checkpoint_every_s: 30    # how often to persist the resume position
+  health_every_s: 10        # how often to write data/state/<uc>_health.json
+  drift_every_s: 3600       # how often to compute PSI drift (hourly)
+  cold_start:
+    allow: false            # if true and no model: learn from live traffic first
+    warmup_events: 200000   # events to buffer before the cold-start train
+
+# --------------------------------------------------------------------------- #
+# Retraining cadence (SPEC_DIGEST §8).
+# Drift signals (PSI / KS / ADWIN) trigger retraining IN ADDITION to these —
+# schedule alone never retrains during a shock, and drift alone never retrains
+# during a calm month.
+# --------------------------------------------------------------------------- #
+cadence:
+  online_models:      continuous   # Half-Space Trees, BOCPD, EWMA/CUSUM
+  rarity_tables:      continuous   # path IDF, UA frequency
+  calibration:        continuous   # percentile windows
+  entity_models:      nightly      # Isolation Forest, LOF   (+ ADWIN/PSI)
+  deep_models:        weekly       # autoencoders, GMMs, char LMs, clustering
+  generative_models:  monthly      # VAEs, UC-10 HMM         (+ score KS)
+  chain_models:       quarterly    # UC-13 chain HMM, priors
+
+# --------------------------------------------------------------------------- #
+# Use cases — policy per case. Detection behaviour (features, model, gate)
+# lives in the plugin and is fixed by the spec, not configured here.
+#
+# `daily_alert_budget` governs DELIVERY ONLY. Every score is always recorded;
+# overflow becomes a digest. It is not a detection threshold.
+# --------------------------------------------------------------------------- #
+# Keys are the canonical use-case SLUGS (docs/NAMING.md); the UC-nn spec IDs
+# appear in comments only — no code path is keyed on them.
+usecases:
+  # --- Tier 1 ---
+  credential_stuffing: { enabled: true,  daily_alert_budget: 50 }   # UC-01
+  web_recon:           { enabled: true,  daily_alert_budget: 50 }   # UC-02
+  bot_detection:       { enabled: true,  daily_alert_budget: 50 }   # UC-04
+  content_scraping:    { enabled: true,  daily_alert_budget: 50 }   # UC-06
+  http_exfiltration:   { enabled: true,  daily_alert_budget: 50 }   # UC-07
+
+  # --- Tier 2 (enable after Tier 1 is stable) ---
+  distributed_scan:    { enabled: false }   # UC-03
+  ua_spoofing:         { enabled: false }   # UC-05
+  beaconing:           { enabled: false }   # UC-08
+  injection_probing:   { enabled: false }   # UC-09
+  status_sequences:    { enabled: false }   # UC-10
+  campaign_clustering: { enabled: false }   # UC-12
+
+  # --- Tier 3 ---
+  session_abuse:       { enabled: false }   # UC-11
+  attack_chain:        { enabled: false }   # UC-13
+  novel_behavior:      { enabled: false }   # UC-14
+  app_abuse:           { enabled: false }   # UC-15
+
+# --------------------------------------------------------------------------- #
+# Analytics (AU-nn) — insights, not alerts. Runs as a separate process so a slow
+# analytics job can never delay a security alert (NFR-13).
+# --------------------------------------------------------------------------- #
+analytics:
+  enabled: false
+  cases:
+    AU-01: { enabled: true }   # traffic baselines & forecasts
+    AU-02: { enabled: true }   # seasonal decomposition
+    AU-11: { enabled: true }   # operational anomalies -> fusion suppressor
+
+# --------------------------------------------------------------------------- #
+# Backends — omit entirely for the standalone profile. Listing any of these
+# under `profile: standalone` is a configuration error (NFR-07).
+# --------------------------------------------------------------------------- #
+backends: {}
+  # kafka:
+  #   bootstrap_servers: ["localhost:9092"]
+  #   input_topic: "raw.weblogs.v1"
+  #   group_id: "soc-ml"
+  # redis:
+  #   url: "redis://localhost:6379/0"
+  # elasticsearch:
+  #   hosts: ["http://localhost:9200"]
+  #   alert_index: "soc-web-ml-alerts"
+  # mlflow:
+  #   tracking_uri: "http://localhost:5000"
