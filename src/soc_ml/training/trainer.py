@@ -218,14 +218,24 @@ def _feature_stats(vectors: list[dict[str, float]]) -> dict[str, dict[str, float
 
 
 def _quantile_per_feature(vectors: list[dict[str, float]], q: float) -> dict[str, float]:
+    """Clip bounds per feature — binary features excluded.
+
+    Clipping a 0/1 feature at p99.9 is either a no-op or, when the positive
+    class is rarer than 0.1%, silently zeroes every positive — which would
+    erase a rare self-supervised label (bot.declared_bot) from the corpus.
+    Hygiene clipping exists to tame heavy tails; binary features have none.
+    """
     import numpy as np
 
     if not vectors:
         return {}
-    return {
-        f: float(np.quantile(np.array([v.get(f, 0.0) for v in vectors]), q))
-        for f in vectors[0]
-    }
+    out: dict[str, float] = {}
+    for f in vectors[0]:
+        col = np.array([v.get(f, 0.0) for v in vectors])
+        if np.isin(col, (0.0, 1.0)).all():
+            continue
+        out[f] = float(np.quantile(col, q))
+    return out
 
 
 def _clip(x: dict[str, float], clip: dict[str, float]) -> dict[str, float]:
