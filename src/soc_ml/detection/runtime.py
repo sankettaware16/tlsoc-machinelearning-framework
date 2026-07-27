@@ -52,6 +52,7 @@ from soc_ml.core.plugins import (
     registry as plugin_registry,
     usecase_model_factories,
 )
+from soc_ml.detection.annotations import EntityAnnotations
 from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
@@ -150,9 +151,9 @@ class _UseCaseRunner:
             "last_drift_band": "unknown",
         }
 
-    def activate(self, bundle: ModelBundle) -> None:
+    def activate(self, bundle: ModelBundle, annotations: EntityAnnotations) -> None:
         self.bundle = bundle
-        self.scorer = Scorer(self.uc_cls, bundle)
+        self.scorer = Scorer(self.uc_cls, bundle, annotations)
         self.builder = WindowFeatureBuilder(bundle.profile)
 
 
@@ -177,6 +178,10 @@ class DetectionRuntime:
         self.registry = ModelRegistry(config.data_dir)
         self.state_dir = config.data_dir / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        # One shared store: exporters (bot_detection) write per window,
+        # consumers (web_recon) read it in the same window — dependency order
+        # guarantees the write happens first.
+        self.annotations = EntityAnnotations()
 
         self._stop = False
         self._started = time.monotonic()
@@ -246,7 +251,7 @@ class DetectionRuntime:
         for runner in self.runners:
             bundle = self.registry.load_current(runner.slug, runner.factories)
             if bundle is not None:
-                runner.activate(bundle)
+                runner.activate(bundle, self.annotations)
                 self.log(f"[runtime] {runner.slug}: serving bundle {bundle.version}")
             else:
                 missing.append(runner)
@@ -303,7 +308,7 @@ class DetectionRuntime:
                 return False
             self.registry.save_bundle(bundle)
             self.registry.promote(runner.slug, bundle.version)
-            runner.activate(bundle)
+            runner.activate(bundle, self.annotations)
             self.log(f"[runtime] cold start: promoted {runner.slug} {bundle.version}")
         return True
 
@@ -439,6 +444,7 @@ class DetectionRuntime:
                 "events": self.stats["events"],
                 "open_windows": runner.builder.open_count if runner.builder else 0,
                 "ingest_failed": source.stats.failed,
+                "entity_annotations": self.annotations.size,
                 **runner.stats,
             }
             path = self.state_dir / f"{runner.slug}_health.json"

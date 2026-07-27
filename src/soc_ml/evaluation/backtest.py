@@ -118,7 +118,11 @@ def run_backtest(
     bundle_dir = registry.save_bundle(bundle)
 
     # ---- score held-out + canary --------------------------------------- #
-    scorer = Scorer(uc_cls, bundle)
+    # The backtest scores one use case, but the annotation store is still
+    # attached so an exporter's write path is exercised offline (FR-72).
+    from soc_ml.detection.annotations import EntityAnnotations
+
+    scorer = Scorer(uc_cls, bundle, EntityAnnotations())
     builder = WindowFeatureBuilder(bundle.profile)
     dedup = AlertDeduplicator()
 

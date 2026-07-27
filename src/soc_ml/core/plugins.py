@@ -290,6 +290,18 @@ class UseCase(Plugin):
         """
         return max(calibrated.values())
 
+    def annotate(self, outcome: Any) -> dict[str, Any] | None:
+        """Per-entity signals this use case exports after scoring a window.
+
+        ``outcome`` is the scorer's ScoreResult (typed loosely here — core
+        cannot depend on the detection layer). Return a dict of namespaced
+        annotation values (``crawler.human_likeness``, ...) to publish to the
+        shared entity-annotation store for use cases that score later in the
+        window (see ``depends_on``), or None to publish nothing. Default:
+        nothing — most use cases only consume.
+        """
+        return None
+
     def calibration_rows(
         self, model_slug: str, rows: list[dict[str, float]]
     ) -> list[dict[str, float]]:
