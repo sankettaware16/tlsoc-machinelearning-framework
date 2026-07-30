@@ -28,6 +28,9 @@ T0 = datetime(2026, 7, 21, 8, 0, 0, tzinfo=timezone.utc)
 
 GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 GOOGLEBOT_IP = "66.249.66.1"  # inside Google's published crawl range
+# A different pool member fetches robots.txt — the production reality (D-023):
+# politeness lives at the operator, not the (ip, ua) entity.
+GOOGLEBOT_ROBOTS_IP = "66.249.64.5"
 
 
 # --------------------------- dependency wiring -------------------------- #
@@ -165,6 +168,9 @@ def test_scorer_suppresses_and_downweights_fired_alerts(tmp_path: Path) -> None:
     weighted = _fired_outcomes(Scorer(WebRecon, bundle, store2), bundle, burst)
     assert weighted and all(o.alert.delivered for o in weighted)
     assert all("downweighted_by" in o.alert.links for o in weighted)
+    assert all(o.record()["downweighted_by"] for o in weighted), (
+        "down-weights must be measurable in the shadow/score log (D-023)"
+    )
     plain_score = plain[0].alert.severity_score
     assert weighted[0].alert.severity_score == max(plain_score - 25, 0)
     assert weighted[0].alert.severity == Severity.from_score(
@@ -199,10 +205,12 @@ def test_runtime_suppresses_googlebot_but_delivers_the_scanner(tmp_path: Path) -
     """Phase 3 exit criterion, offline: the crawler FP stops, detection doesn't."""
     events = _benign(2000)
     # Googlebot's normal presence during the training window: polite crawl,
-    # robots.txt first — this also gives the GBM its declared-bot class.
+    # robots.txt first — fetched by a DIFFERENT address of the verified pool
+    # than the one that later recrawls (the rotating-pool production shape).
+    # This also gives the GBM its declared-bot class.
     events.append(Event(
         timestamp=T0, observer=Observer(server="web01"),
-        source_ip=GOOGLEBOT_IP, geo_country_iso="ZZ",
+        source_ip=GOOGLEBOT_ROBOTS_IP, geo_country_iso="ZZ",
         url_path="/robots.txt", status_code=200, http_referrer=None,
         user_agent=GOOGLEBOT_UA, body_bytes=200,
     ))

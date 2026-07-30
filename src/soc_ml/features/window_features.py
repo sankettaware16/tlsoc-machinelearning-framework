@@ -120,6 +120,13 @@ class WindowFeatureBuilder:
         # history restarts if it returns), and evictions are counted, never
         # silent (NFR-09).
         self._memory: dict[EntityKey, EntityMemory] = {}
+        # (server, crawler family) pairs where a *verified* member of the
+        # family fetched /robots.txt. Politeness is an operator property, not
+        # an entity one: Googlebot fetches robots.txt from one address of its
+        # pool and crawls from dozens, so a per-entity flag misses the pool
+        # (D-023 — found on production traffic). Naturally tiny: verified
+        # families × servers.
+        self._family_robots: set[tuple[str, str]] = set()
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -195,6 +202,10 @@ class WindowFeatureBuilder:
         w.ua = event.user_agent
         self._memory_for(w.entity).remember(event)
         w.bot.fold(event, ts, w.start)
+        if event.url_path == "/robots.txt":
+            family = claimed_crawler_family(event.user_agent)
+            if family and verified_crawler(event.source_ip, event.user_agent):
+                self._family_robots.add((server, family))
 
         status = event.status_code or 0
         if status == 404:
@@ -283,6 +294,7 @@ class WindowFeatureBuilder:
             computed_at=w.start + timedelta(seconds=self.window_s),
             values=values,
         )
+        family = claimed_crawler_family(w.ua)
         evidence = {
             "window_start": w.start.isoformat(),
             "window_end": (w.start + timedelta(seconds=self.window_s)).isoformat(),
@@ -296,8 +308,12 @@ class WindowFeatureBuilder:
             # evidence, deliberately never model input (models learn behavior,
             # not IP ranges).
             "declared_bot": declared_bot(w.ua),
-            "crawler_family": claimed_crawler_family(w.ua),
+            "crawler_family": family,
             "verified_crawler": verified_crawler(w.entity.ip, w.ua),
+            # Operator-level politeness: some verified member of this family
+            # fetched robots.txt on this server (D-023).
+            "family_robots_txt": bool(family)
+            and (server, family) in self._family_robots,
             "raw_lines": list(w.raw_lines),
         }
         return WindowResult(vector=vector, evidence=evidence)

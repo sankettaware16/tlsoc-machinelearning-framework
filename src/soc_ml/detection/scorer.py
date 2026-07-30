@@ -65,6 +65,11 @@ class ScoreResult:
             # The before/after measurement lives here: fired stays true,
             # the suppression is its own visible fact (NFR-09).
             row["suppressed_by"] = self.alert.suppressed_by
+        if self.alert is not None and "downweighted_by" in self.alert.links:
+            # Down-weights must be as measurable as suppressions — their
+            # invisibility here is how a mis-scoped politeness check hid on
+            # production traffic (D-023).
+            row["downweighted_by"] = self.alert.links["downweighted_by"]
         return row
 
 

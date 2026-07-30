@@ -144,10 +144,14 @@ class BotDetection(UseCase):
             "crawler.is_known": declared or raw.get("hdbscan_cluster", 0.0) > 0.0,
             "crawler.is_verified": bool(outcome.evidence.get("verified_crawler", False)),
             # The politeness marker consumers pair with is_verified: a real
-            # search-engine crawler fetches robots.txt; a "verified" client
-            # that never has is treated more cautiously downstream.
-            "crawler.robots_txt": outcome.features.get("bot.robots_txt_fetched", 0.0)
-            > 0.0,
+            # search-engine crawler fetches robots.txt. Checked at the
+            # *operator* scope as well as the entity scope — crawler pools
+            # fetch robots.txt from one address and crawl from many (D-023) —
+            # and never as a model input (identity-scoped, like verification).
+            "crawler.robots_txt": (
+                outcome.features.get("bot.robots_txt_fetched", 0.0) > 0.0
+                or bool(outcome.evidence.get("family_robots_txt", False))
+            ),
         }
 
     def gate(self, fused_percentile: float, evidence: dict[str, Any]) -> bool:
