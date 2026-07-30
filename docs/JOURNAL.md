@@ -10,6 +10,45 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-07-30 — First combined shadow run on production (3.6)
+
+### D-023 · Politeness is an operator property: scope robots.txt to (server, verified family)
+
+**Context.** The first bot_detection + web_recon shadow run on elkcc's live
+nginx showed the export working (39k windows, ~20k entities annotated, zero
+spoofing false-fires) but Googlebot `66.249.64.168` still firing web_recon
+un-suppressed — the exact false positive Phase 3 exists to remove.
+
+**Diagnosis.** D-022 defined "polite" as *this entity* fetched robots.txt.
+Real crawler pools rotate addresses: the whole 66.249.x pool made only 3
+robots.txt fetches in the file, from different addresses (and UA variants)
+than the recrawling one. Per-(ip, ua_hash) scoping can essentially never see
+a pool member's politeness, so verified crawlers were down-weighted instead
+of suppressed — and down-weights were not surfaced in shadow rows, so the
+mis-scoping was invisible until the entity listing was inspected by hand.
+
+**Decision.** Two changes. (1) The window builder tracks `(server, family)`
+pairs where a **verified** member of a crawler family fetched robots.txt;
+window evidence carries it as `family_robots_txt`, and the crawler export's
+`crawler.robots_txt` is entity-level OR family-level. An *unverified*
+claimant's robots.txt fetch never whitelists the family — verification
+gates the write, so the flag cannot be planted by a spoofer. (2)
+`ScoreResult.record()` now surfaces `downweighted_by` alongside
+`suppressed_by` — a delivery modification that cannot be measured from the
+shadow log is treated as a defect in itself.
+
+**Rules out.** Politeness per entity as the only scope; any delivery-layer
+decision (suppress, down-weight, future corroboration) that does not appear
+in the always-written score record.
+
+**Lives in.** `features/window_features.py` (`_family_robots`),
+`usecases/bot_detection.py` (`annotate`), `detection/scorer.py`
+(`record`), tests `test_bot_features.py` /
+`test_web_recon_suppression.py` (the e2e now fetches robots.txt from a
+different pool address than the one that recrawls).
+
+---
+
 ## 2026-07-27 — Phase 3.5: crawler suppression semantics
 
 ### D-022 · Suppress at the delivery layer, define "polite" as robots.txt, down-weight one band

@@ -216,6 +216,38 @@ def test_robots_txt_memory_persists_across_windows() -> None:
     )
 
 
+def test_family_robots_txt_spans_the_crawler_pool() -> None:
+    """The production lesson (D-023): Googlebot fetches robots.txt from one
+    address of its pool and crawls from others — politeness is per operator."""
+    fetcher = _event(T0, ip="66.249.64.5", ua=GOOGLEBOT_UA, path="/robots.txt")
+    crawler = [
+        _event(T0 + timedelta(seconds=10 + i), ip="66.249.66.1",
+               ua=GOOGLEBOT_UA, path=f"/p{i}")
+        for i in range(3)
+    ]
+    results = _windows([fetcher] + crawler)
+    by_ip = {r.vector.entity.ip: r.evidence for r in results}
+    assert by_ip["66.249.66.1"]["family_robots_txt"] is True, (
+        "another verified pool member fetched robots.txt on this server"
+    )
+    assert by_ip["66.249.66.1"]["verified_crawler"] is True
+
+
+def test_family_robots_txt_ignores_unverified_claimants() -> None:
+    # claims Googlebot from outside the published ranges: its robots.txt
+    # fetch must not whitelist the family
+    fake = _event(T0, ip="203.0.113.66", ua=GOOGLEBOT_UA, path="/robots.txt")
+    real = [
+        _event(T0 + timedelta(seconds=10 + i), ip="66.249.66.1",
+               ua=GOOGLEBOT_UA, path=f"/p{i}")
+        for i in range(3)
+    ]
+    results = _windows([fake] + real)
+    by_ip = {r.vector.entity.ip: r.evidence for r in results}
+    assert by_ip["66.249.66.1"]["family_robots_txt"] is False
+    assert by_ip["203.0.113.66"]["family_robots_txt"] is False
+
+
 def test_evidence_carries_identity_context() -> None:
     events = [
         _event(T0 + timedelta(seconds=i), ip="66.249.66.1", ua=GOOGLEBOT_UA,

@@ -54,14 +54,15 @@ def test_store_is_bounded_lru() -> None:
 
 
 def _outcome(*, gbm: float, declared: bool, verified: bool,
-             cluster: float = 0.0) -> ScoreResult:
+             cluster: float = 0.0, family_robots: bool = False) -> ScoreResult:
     return ScoreResult(
         entity=EntityKey(server="web01", ip="203.0.113.9", ua_hash="h"),
         window_end=T0.isoformat(),
         fused_percentile=0.5,
         per_model={},
         fired=False,
-        evidence={"declared_bot": declared, "verified_crawler": verified},
+        evidence={"declared_bot": declared, "verified_crawler": verified,
+                  "family_robots_txt": family_robots},
         per_model_raw={"gbm_bot": gbm, "gmm": 0.5, "hdbscan_cluster": cluster},
     )
 
@@ -79,6 +80,14 @@ def test_annotate_marks_undeclared_automation_by_association() -> None:
     out = uc.annotate(_outcome(gbm=0.8, declared=False, verified=False, cluster=0.9))
     assert out["crawler.is_known"] is True, "clustered with the declared bots"
     assert out["crawler.is_verified"] is False
+
+
+def test_annotate_takes_politeness_from_the_family_scope_too() -> None:
+    uc = BotDetection(EnvironmentProfile())
+    # this entity never fetched robots.txt itself, but its verified pool did
+    out = uc.annotate(_outcome(gbm=0.97, declared=True, verified=True,
+                               family_robots=True))
+    assert out["crawler.robots_txt"] is True
 
 
 def test_annotate_on_a_human_reads_human() -> None:
