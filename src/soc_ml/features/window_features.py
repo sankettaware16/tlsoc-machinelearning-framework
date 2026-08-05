@@ -176,6 +176,21 @@ class WindowFeatureBuilder:
             yield self._close(self._open[key])
         self._open.clear()
 
+    # -- durable state ------------------------------------------------- #
+    # Only the politeness memory survives a restart: it is tiny, identity-
+    # scoped, and losing it costs real money (a verified crawler's alerts
+    # get delivered for up to a day until it refetches robots.txt, D-023).
+    # Entity memory and open windows stay ephemeral by design — they refill
+    # within their own horizons and are far too large to persist.
+
+    def export_state(self) -> dict:
+        return {"family_robots": sorted(list(pair) for pair in self._family_robots)}
+
+    def restore_state(self, doc: dict) -> None:
+        for pair in doc.get("family_robots", []):
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                self._family_robots.add((str(pair[0]), str(pair[1])))
+
     @property
     def open_count(self) -> int:
         """Windows currently open (awaiting close) — a health/backpressure signal."""
