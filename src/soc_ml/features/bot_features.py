@@ -80,7 +80,11 @@ _DECLARED_BOT_RE = re.compile(
     r"(?:bot|crawler|spider|scraper|slurp)(?:[^a-z]|$)"
     r"|curl/|wget/|python-requests|python-urllib|scrapy|go-http-client"
     r"|java/|libwww|okhttp|httpx/|aiohttp|phantomjs|headlesschrome"
-    r"|facebookexternalhit|feedfetcher|monitoring|pingdom|uptimerobot|nagios"
+    r"|facebookexternalhit|feedfetcher|pingdom|uptimerobot|nagios"
+    # 'monitor' and 'probe' earned their place in production: a
+    # "netprobe/1.0 (latency monitor)" client was mislabeled browser and its
+    # honest machine cadence then read as UA-spoofing for 171 windows.
+    r"|monitor|probe"
 )
 _CUBOT_RE = re.compile(r"cubot[ _-]")  # device brand, not a robot
 

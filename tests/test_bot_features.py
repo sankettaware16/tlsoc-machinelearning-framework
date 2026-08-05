@@ -69,6 +69,9 @@ def test_declared_bot_label() -> None:
     assert declared_bot("python-requests/2.31") is True
     assert declared_bot(None) is True, "no UA at all is script traffic"
     assert declared_bot(BROWSER_UA) is False
+    # the production mislabel: honest automation that says monitor/probe,
+    # just not with any of the classic bot keywords
+    assert declared_bot("netprobe/1.0 (latency monitor)") is True
 
 
 def test_declared_bot_does_not_mislabel_cubot_phones() -> None:
