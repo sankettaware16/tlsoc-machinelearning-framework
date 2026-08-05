@@ -233,6 +233,30 @@ def test_family_robots_txt_spans_the_crawler_pool() -> None:
     assert by_ip["66.249.66.1"]["verified_crawler"] is True
 
 
+def test_family_robots_memory_survives_export_restore() -> None:
+    """Restart-safety (D-023): a resumed runtime must not forget a verified
+    crawler already proved polite — history is skipped on resume."""
+    from soc_ml.baseline.profile import EnvironmentProfile
+
+    first = WindowFeatureBuilder(EnvironmentProfile())
+    for _ in first.add(_event(T0, ip="66.249.64.5", ua=GOOGLEBOT_UA, path="/robots.txt")):
+        pass
+    state = first.export_state()
+    assert ["logserver", "googlebot"] not in state["family_robots"]  # server is web01
+    assert ["web01", "googlebot"] in state["family_robots"]
+
+    resumed = WindowFeatureBuilder(EnvironmentProfile())
+    resumed.restore_state(state)
+    results = []
+    for i in range(3):
+        results.extend(resumed.add(
+            _event(T0 + timedelta(hours=1, seconds=i), ip="66.249.66.1",
+                   ua=GOOGLEBOT_UA, path=f"/p{i}")
+        ))
+    results.extend(resumed.flush())
+    assert results[0].evidence["family_robots_txt"] is True
+
+
 def test_family_robots_txt_ignores_unverified_claimants() -> None:
     # claims Googlebot from outside the published ranges: its robots.txt
     # fetch must not whitelist the family

@@ -263,3 +263,23 @@ def test_runtime_suppresses_googlebot_but_delivers_the_scanner(tmp_path: Path) -
     assert rt.stats["alerts_suppressed"] >= 1
     health = json.loads((tmp_path / "state" / "web_recon_health.json").read_text())
     assert health["alerts_suppressed"] >= 1
+
+    # the politeness memory is durable: it is in the checkpoint, and a
+    # resumed runtime (which skips history) gets it back (D-023)
+    ckpt = json.loads(
+        (tmp_path / "state" / "bot_detection+web_recon_checkpoint.json").read_text()
+    )
+    assert ["web01", "googlebot"] in ckpt["family_robots"]
+    rt2 = DetectionRuntime(
+        RuntimeConfig(
+            usecases=("web_recon", "bot_detection"),
+            input_dir=incoming, data_dir=tmp_path, mode="shadow", follow=False,
+        ),
+        log=lambda *_: None,
+    )
+    assert rt2.run() == 0
+    assert rt2.stats["events"] == 0, "checkpoint resume skips consumed input"
+    exported = rt2.runners[0].builder.export_state()
+    assert ["web01", "googlebot"] in exported["family_robots"], (
+        "restart must not forget the crawler proved polite"
+    )

@@ -446,14 +446,29 @@ class DetectionRuntime:
         path = self._ckpt_path()
         if path.exists():
             try:
-                source.seek(json.loads(path.read_text()))
+                doc = json.loads(path.read_text())
+                source.seek(doc)
+                # Restore the crawler-politeness memory: resuming from a
+                # checkpoint skips history, so without this a restart forgets
+                # a verified crawler proved polite and delivers its alerts
+                # until the next robots.txt fetch (D-023).
+                for runner in self.runners:
+                    if runner.builder:
+                        runner.builder.restore_state(doc)
                 self.log("[runtime] resumed from checkpoint")
             except Exception as exc:
                 self.log(f"[runtime] WARN: checkpoint unreadable ({exc}); starting fresh")
 
     def _save_checkpoint(self, source: FileSource) -> None:
+        doc = source.checkpoint()
+        family: set = set()
+        for runner in self.runners:
+            if runner.builder:
+                for pair in runner.builder.export_state()["family_robots"]:
+                    family.add(tuple(pair))
+        doc["family_robots"] = sorted(list(pair) for pair in family)
         tmp = self._ckpt_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(source.checkpoint()), encoding="utf-8")
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
         tmp.replace(self._ckpt_path())
 
     def _write_health(self, source: FileSource) -> None:
