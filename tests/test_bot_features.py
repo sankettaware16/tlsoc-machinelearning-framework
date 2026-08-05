@@ -87,6 +87,11 @@ def test_claimed_crawler_family() -> None:
 
 def test_verified_crawler_needs_claim_and_published_range() -> None:
     assert verified_crawler("66.249.66.1", GOOGLEBOT_UA) is True
+    # production finding: Bingbot crawls from published Azure ranges now
+    bingbot_ua = ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; "
+                  "bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116 Safari/537.36")
+    assert verified_crawler("20.43.120.27", bingbot_ua) is True
+    assert verified_crawler("20.43.121.5", bingbot_ua) is False, "outside the /28"
     # claims Googlebot from outside Google's ranges -> spoofing, not verified
     assert verified_crawler("203.0.113.5", GOOGLEBOT_UA) is False
     # right range, no claim -> not verified (identity requires both)
