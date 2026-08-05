@@ -89,19 +89,76 @@ _DECLARED_BOT_RE = re.compile(
 _CUBOT_RE = re.compile(r"cubot[ _-]")  # device brand, not a robot
 
 #: Published crawl ranges for the crawler families we verify. This is operator
-#: identity published by the operators themselves (Google's and Microsoft's
-#: verification docs), not learned data — update it like any other code when
-#: they publish changes. Verification demands BOTH the UA claim and a source
-#: address inside the claimed family's ranges; a claim from outside the range
-#: is spoofing evidence, never a pass.
+#: identity published by the operators themselves, not learned data — refresh
+#: it like any other code when they publish changes. Verification demands BOTH
+#: the UA claim and a source address inside the claimed family's ranges; a
+#: claim from outside the ranges is spoofing evidence, never a pass.
+#:
+#: Snapshot 2026-08-05 from the operators' own files:
+#:   https://developers.google.com/static/search/apis/ipranges/googlebot.json
+#:   https://www.bing.com/toolbox/bingbot.json
+#: Contiguous published blocks are aggregated (66.249.64.0/19, 192.178.x)
+#: only where the covering block is operator-owned crawl infrastructure.
 CRAWLER_RANGES: dict[str, tuple[str, ...]] = {
-    "googlebot": ("66.249.64.0/19",),
+    "googlebot": (
+        "66.249.64.0/19",
+        "192.178.4.0/24",
+        "192.178.5.0/27",
+        "192.178.6.0/23",
+        "34.100.182.96/28",
+        "34.101.50.144/28",
+        "34.118.254.0/28",
+        "34.118.66.0/28",
+        "34.126.178.96/28",
+        "34.146.150.144/28",
+        "34.147.110.144/28",
+        "34.151.74.144/28",
+        "34.152.50.64/28",
+        "34.154.114.144/28",
+        "34.155.98.32/28",
+        "34.165.18.176/28",
+        "34.175.160.64/28",
+        "34.176.130.16/28",
+        "34.22.85.0/27",
+        "34.64.82.64/28",
+        "34.65.242.112/28",
+        "34.80.50.80/28",
+        "34.88.194.0/28",
+        "34.89.10.80/28",
+        "34.89.198.80/28",
+        "34.96.162.48/28",
+        "35.247.243.240/28",
+        "2001:4860:4801::/48",
+    ),
     "bingbot": (
         "157.55.39.0/24",
         "207.46.13.0/24",
         "40.77.167.0/24",
         "13.66.139.0/24",
-        "52.167.144.0/24",
+        "13.66.144.0/28",
+        "52.167.144.0/28",
+        "13.67.10.16/28",
+        "13.69.66.240/28",
+        "13.71.172.224/28",
+        "139.217.52.0/28",
+        "191.233.204.224/28",
+        "20.36.108.32/28",
+        "20.43.120.16/28",
+        "40.79.131.208/28",
+        "40.79.186.176/28",
+        "52.231.148.0/28",
+        "20.79.107.240/28",
+        "51.105.67.0/28",
+        "20.125.163.80/28",
+        "40.77.188.0/22",
+        "65.55.210.0/24",
+        "199.30.24.0/23",
+        "40.77.202.0/24",
+        "40.77.139.0/25",
+        "20.74.197.0/28",
+        "20.15.133.160/27",
+        "40.77.177.0/24",
+        "40.77.178.0/23",
     ),
 }
 _CRAWLER_NETWORKS = {
