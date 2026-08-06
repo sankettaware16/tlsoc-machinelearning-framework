@@ -72,6 +72,11 @@ def test_declared_bot_label() -> None:
     # the production mislabel: honest automation that says monitor/probe,
     # just not with any of the classic bot keywords
     assert declared_bot("netprobe/1.0 (latency monitor)") is True
+    # structural rules: non-Mozilla prefix, and the crawler-only 'compatible;'
+    assert declared_bot("UniversityValidator/1.0") is True
+    assert declared_bot("Mozilla/5.0 (compatible; halogion-discover/1.0)") is True
+    firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+    assert declared_bot(firefox) is False
 
 
 def test_declared_bot_does_not_mislabel_cubot_phones() -> None:

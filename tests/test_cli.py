@@ -94,9 +94,9 @@ def test_train_promote_status_run_lifecycle(logfile: Path, tmp_path: Path, capsy
     assert main(["promote", "--out", out_dir]) == 0
     assert "serving" in capsys.readouterr().out.lower()
 
-    # live run over a directory, one pass, deliver alerts
+    # live run over a directory, one pass, deliver alerts, budget-capped
     rc = main(["run", "--input", str(incoming), "--out", out_dir,
-               "--mode", "live", "--once"])
+               "--mode", "live", "--once", "--daily-budget", "5"])
     assert rc == 0
     assert main(["status", "--out", out_dir]) == 0
     assert "live health" in capsys.readouterr().out.lower()

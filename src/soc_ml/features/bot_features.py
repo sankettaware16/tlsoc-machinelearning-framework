@@ -187,6 +187,15 @@ def declared_bot(ua: str | None) -> bool:
     This is the free self-supervised label (D-019): cheap, present on every
     event, and honest clients set it. It is never used as a behavioral model
     input — it is what the behavioral model is trained to predict.
+
+    Two structural rules come before the keyword list, both learned from
+    production (keyword whack-a-mole does not scale — "UniversityValidator",
+    "halogion-discover", "netprobe" all slipped past it):
+
+    * every real browser UA has started with ``Mozilla/`` for two decades —
+      a UA that doesn't is a tool saying so honestly;
+    * no modern browser writes ``compatible;`` — that convention survives
+      only in crawler UAs ("Mozilla/5.0 (compatible; Googlebot/2.1; ...)").
     """
     if not ua:
         # No UA at all is overwhelmingly scripts/monitors, and a browser
@@ -195,6 +204,10 @@ def declared_bot(ua: str | None) -> bool:
     lowered = ua.lower()
     if _CUBOT_RE.search(lowered):
         return False
+    if not lowered.startswith("mozilla/"):
+        return True
+    if "compatible;" in lowered:
+        return True
     return bool(_DECLARED_BOT_RE.search(lowered))
 
 
