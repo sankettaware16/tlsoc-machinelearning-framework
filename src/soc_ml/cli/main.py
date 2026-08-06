@@ -534,6 +534,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         follow=not args.once,
         allow_cold_start=args.allow_cold_start,
         warmup_events=args.warmup_events,
+        daily_alert_budget=args.daily_budget,
     )
     try:
         return DetectionRuntime(rc).run()
@@ -666,6 +667,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="if no model exists, learn one from live traffic first")
     rn.add_argument("--warmup-events", type=int, default=200_000, dest="warmup_events",
                     help="cold-start warmup size (default 200,000)")
+    rn.add_argument("--daily-budget", type=int, default=None, dest="daily_budget",
+                    help="max delivered alerts per use case per server per day; "
+                         "overflow goes to the visible daily digest, never dropped "
+                         "(delivery policy, FR-34; default: each use case's own)")
     rn.set_defaults(func=cmd_run)
 
     pr = sub.add_parser("promote", help="promote a candidate model to serving (or rollback)")
