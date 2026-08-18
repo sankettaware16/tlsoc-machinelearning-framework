@@ -187,8 +187,15 @@ def serve(
     read_only: bool = False,
     allow_remote: bool = False,
     verbose: bool = False,
-    log=print,
+    log=None,
 ) -> int:
+    # Unbuffered by default: redirected to a file, Python buffers stdout, and
+    # the startup banner carries the bearer token — an operator who cannot see
+    # it cannot use the promote button.
+    if log is None:
+        def log(*a):
+            print(*a, flush=True)
+
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and not tls_cert and not allow_remote:
         log(
