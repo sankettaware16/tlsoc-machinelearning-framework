@@ -30,6 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import soc_ml.models  # noqa: F401,E402
+import soc_ml.usecases  # noqa: F401,E402
 from soc_ml.core.plugins import registry as plugin_registry  # noqa: E402
 from soc_ml.core.plugins import usecase_model_factories  # noqa: E402
 from soc_ml.detection.annotations import EntityAnnotations  # noqa: E402
@@ -38,8 +40,6 @@ from soc_ml.evaluation.canary import is_canary_ip  # noqa: E402
 from soc_ml.features.window_features import WindowFeatureBuilder  # noqa: E402
 from soc_ml.ingest.file import FileSource  # noqa: E402
 from soc_ml.registry.store import ModelRegistry  # noqa: E402
-import soc_ml.models  # noqa: F401,E402
-import soc_ml.usecases  # noqa: F401,E402
 
 
 def events(path: str, limit: int):
