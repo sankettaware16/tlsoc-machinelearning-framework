@@ -486,8 +486,13 @@ def section_side_files(state: Path) -> None:
         if p.exists():
             try:
                 doc = json.loads(p.read_text())
-                drifted = doc.get("drifted") or doc.get("features_over_threshold") or []
-                print(f"  {slug}_drift.json: {mtime(p)}  drifted={drifted if drifted else 'none'}")
+                drifted = doc.get("drifted_features") or []
+                band = doc.get("band", "?")
+                flag = "   <-- MODEL IS STALE" if doc.get("should_retrain") else ""
+                print(f"  {slug}_drift.json: {mtime(p)}  band={band} "
+                      f"max_psi={doc.get('max_psi')}{flag}")
+                if drifted:
+                    print(f"      drifted: {', '.join(drifted)}")
             except Exception:
                 print(f"  {slug}_drift.json: unreadable")
         else:
@@ -501,16 +506,28 @@ def section_side_files(state: Path) -> None:
 
 def section_verdict(shadow: dict, alerts: dict, healths: dict) -> None:
     hr("8. VERDICT AGAINST THE 3.6 EXIT CRITERIA")
+    # Criterion 1 is "do verified crawlers stop firing", NOT "is the total
+    # smaller". Those come apart: if crawlers were only a small share of fires,
+    # correct suppression still barely moves the total. So judge it on whether
+    # published-range addresses survive into delivery, and report the share
+    # separately so a 2% cut is not mistaken for a weak suppressor.
     wr = shadow.get("web_recon") or {}
-    ok1 = None
     if wr.get("fired"):
         supp = wr["suppressed"]
-        ok1 = supp > 0
+        share = 100.0 * supp / wr["fired"]
+        leaked = (alerts.get("web_recon") or {}).get("crawlers", 0)
         print(f"  [1] web_recon before/after : {wr['fired']:,} fired -> "
-              f"{wr['after']:,} delivered ({supp:,} suppressed)")
-        print(f"      {'PASS' if ok1 else 'FAIL'} — "
-              + ("suppression is doing work" if ok1
-                 else "NOTHING was suppressed; the crawler export is not reaching the gate"))
+              f"{wr['after']:,} after suppression ({supp:,} = {share:.1f}%)")
+        if leaked:
+            print(f"      FAIL — {leaked:,} delivered alerts are still on published")
+            print("      crawler ranges; suppression is not reaching them.")
+        elif supp:
+            print("      PASS — no published-range crawler survives into delivery.")
+            print(f"      Crawlers were only {share:.1f}% of fires, so the remaining")
+            print("      volume is non-crawler and suppression cannot reduce it.")
+        else:
+            print("      FAIL — nothing suppressed; the crawler export is not"
+                  " reaching the gate.")
     else:
         print("  [1] web_recon before/after : no fires recorded — cannot measure.")
 
