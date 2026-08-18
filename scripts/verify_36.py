@@ -270,11 +270,64 @@ def section_registry(data: Path) -> None:
                 pass
 
 
-def section_shadow(state: Path, nets) -> dict:
+def reconstruct_from_health(healths: dict) -> dict:
+    """Before/after from the health counters when the shadow log is unusable.
+
+    ``_handle`` only calls ``_shadow_record`` in observe/shadow mode, so a live
+    deployment writes no score rows at all. The counters still decompose the
+    gate's output: every fire lands in exactly one of delivered / folded /
+    digested / suppressed.
+    """
+    out = {}
+    for slug, h in healths.items():
+        delivered = h.get("alerts_delivered", 0)
+        folded = h.get("alerts_folded", 0)
+        digested = h.get("alerts_digested", 0)
+        suppressed = h.get("alerts_suppressed", 0)
+        fired = delivered + folded + digested + suppressed
+        days = (h.get("uptime_s") or 0) / 86400.0
+        windows = h.get("windows")
+        sub(f"{slug} — reconstructed from health counters")
+        print(f"  uptime               : {days:.2f} days")
+        if windows:
+            print(f"  windows scored       : {windows:,}")
+        print(f"  FIRED (before suppr.): {fired:,}   {per_day(fired, days)}")
+        print(f"    suppressed (crawler): {suppressed:,}"
+              + (f"   = {100.0 * suppressed / fired:.1f}% of fires" if fired else ""))
+        print(f"    folded (dedup)      : {folded:,}")
+        print(f"    digested (budget)   : {digested:,}")
+        print(f"    DELIVERED           : {delivered:,}   {per_day(delivered, days)}")
+        if windows and fired:
+            print(f"  gate fire rate       : {100.0 * fired / windows:.4f}% of windows"
+                  "   (p99.7 gating fires on ~0.3% by construction)")
+        if digested > delivered:
+            print("  NOTE: digested > delivered — the daily budget is clamping the")
+            print("        delivered number. Read FIRED, not DELIVERED, as the")
+            print("        detector's true output.")
+        out[slug] = {"fired": fired, "suppressed": suppressed,
+                     "after": fired - suppressed, "days": days,
+                     "delivered": delivered, "digested": digested}
+    return out
+
+
+def section_shadow(state: Path, nets, healths: dict) -> dict:
     hr("5. THE BEFORE/AFTER MEASUREMENT  (exit criterion 1)")
     print("Every score is recorded in the shadow log whether or not it fired,")
     print("and a suppressed alert keeps fired=true with suppressed_by set (D-022).")
     print("So the shadow log alone gives the fire rate before AND after suppression.")
+
+    # ...except that runtime._handle only calls _shadow_record in observe/shadow
+    # mode. A live deployment writes no score rows, so a shadow file that is
+    # present is a *leftover from an earlier run* and reading it as current
+    # would silently report the wrong period.
+    live = [s for s, h in healths.items() if h.get("mode") == "live"]
+    if live:
+        print(f"\n  !! mode=live for {', '.join(live)} — the runtime does NOT write")
+        print("     score rows in live mode (runtime.py `_handle`). Any shadow file")
+        print("     below is a leftover from an earlier shadow run. Falling back to")
+        print("     the health counters, which are current.")
+        return reconstruct_from_health(healths)
+
     summary = {}
     for slug in SLUGS:
         p = state / f"{slug}_shadow.ndjson"
@@ -470,15 +523,22 @@ def section_verdict(shadow: dict, alerts: dict, healths: dict) -> None:
     else:
         print("  [2] bot_detection spoofers : no alert file — nothing delivered.")
 
-    total = sum(v.get("delivered", 0) for v in alerts.values())
-    days = max((v.get("days") or 0) for v in alerts.values()) if alerts else 0
-    if days:
-        rate = total / days
-        print(f"  [3] combined delivered rate: {total:,} over {days:.2f}d = {rate:.1f}/day")
+    # Criterion 3 asks whether the detector's output is inside budget. The
+    # delivered count cannot answer that on its own: the daily budget clamps it
+    # by construction, so a detector firing 300x too often still reports exactly
+    # the budget. The honest number is post-suppression fires.
+    days = max((v.get("days") or 0) for v in shadow.values()) if shadow else 0
+    fired = sum(v.get("after", 0) for v in shadow.values())
+    delivered = sum(v.get("delivered", 0) for v in shadow.values())
+    if days and fired:
+        rate = fired / days
+        print(f"  [3] post-suppression fires : {fired:,} over {days:.2f}d = {rate:.1f}/day")
+        print(f"      delivered after budget : {delivered:,} = {delivered / days:.1f}/day")
         print(f"      {'WITHIN' if rate <= 3 else 'ABOVE'} the <=3/day/server target"
-              + ("" if rate <= 3 else " — do not widen scope yet"))
+              + ("" if rate <= 3 else
+                 f" by ~{rate / 3:.0f}x — the budget is hiding this, not fixing it"))
     else:
-        print("  [3] combined delivered rate: span too short to judge.")
+        print("  [3] combined rate: not enough data to judge.")
 
     stale = [s for s, h in healths.items() if h.get("mode") != "live"]
     if stale:
@@ -509,7 +569,7 @@ def main() -> int:
     healths = section_health(state)
     section_checkpoint(state)
     section_registry(data)
-    shadow = section_shadow(state, nets)
+    shadow = section_shadow(state, nets, healths)
     alerts = section_alerts(data, nets)
     section_side_files(state)
     section_verdict(shadow, alerts, healths)
