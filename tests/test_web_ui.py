@@ -59,9 +59,21 @@ def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True
     for version in ("v20260101T000000", "v20260806T124821", "v20260818T090000"):
         d = models / version
         d.mkdir(parents=True, exist_ok=True)
-        (d / "metadata.json").write_text(json.dumps(
-            {"version": version, "trained_at": f"{version[1:5]}-01-01T00:00:00+00:00",
-             "train_windows": 12643}))
+        # Exactly the keys ModelBundle.save writes — an invented shape here
+        # would let a field-name mistake in the reader pass its own test.
+        (d / "metadata.json").write_text(json.dumps({
+            "usecase": "web_recon", "rule_id": "UC-02", "tier": 1,
+            "version": version,
+            "created_at": f"{version[1:5]}-01-01T00:00:00+00:00",
+            "source": "/var/log/soc_output/nginx.json",
+            "train_events": 641721, "train_windows": 12643,
+            "hygiene": {"windows_dropped": 33},
+            "models": {"isolation_forest": "IsolationForestModel",
+                       "lof_novelty": "LOFNoveltyModel"},
+            "models_skipped": [],
+            "gate": {"percentile": 0.997, "min_events": 5, "min_distinct_paths": 3},
+            "feature_code_sha256": "3e069beacfefcadf",
+        }))
     (models / "current").write_text("v20260806T124821")
     if candidate:
         (models / "candidate").write_text("v20260818T090000")
@@ -99,6 +111,22 @@ def test_models_marks_approval_status(tmp_path: Path) -> None:
     assert by_status["v20260818T090000"] == "pending"
     assert by_status["v20260101T000000"] == "retained"
     assert uc["can_rollback"] is True
+
+
+def test_version_provenance_is_read_from_real_metadata_keys(tmp_path: Path) -> None:
+    """Regression: the reader looked for `trained_at`/`feature_sha256`.
+
+    The bundle writes `created_at` and `feature_code_sha256`, so every version
+    rendered "trained: None" against a real registry while the tests passed.
+    """
+    st = DashboardState(_deployment(tmp_path))
+    v = st.models()["usecases"][0]["versions"][0]
+    assert v["trained_at"], "provenance must survive the read"
+    assert v["feature_code_sha256"] == "3e069beacfefcadf"
+    assert v["train_events"] == 641721
+    assert v["windows_dropped"] == 33
+    assert v["models"] == ["isolation_forest", "lof_novelty"]
+    assert v["gate"]["min_distinct_paths"] == 3
 
 
 def test_promote_moves_the_serving_pointer(tmp_path: Path) -> None:
