@@ -58,6 +58,11 @@ soc-ml = "soc_ml.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The dashboard is one embedded HTML file — no build step, no CDN, and no web
+# framework, so the standalone profile still installs with no infrastructure.
+[tool.setuptools.package-data]
+soc_ml = ["web/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

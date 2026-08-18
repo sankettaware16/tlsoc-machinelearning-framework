@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soc-ml operator console</title>
+<style>
+:root{
+  --bg:#0e1116; --panel:#161b22; --panel2:#1c222b; --line:#262d38;
+  --fg:#e6edf3; --muted:#8b949e; --dim:#6e7681;
+  --accent:#4493f8; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --info:#a371f7;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f6f8fa;--panel:#fff;--panel2:#f0f3f6;--line:#d8dee4;
+        --fg:#1f2328;--muted:#59636e;--dim:#818b98;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--accent)}
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+       padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);
+       position:sticky;top:0;z-index:10}
+h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+h1 small{color:var(--dim);font-weight:400;margin-left:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+      font-size:12px;font-weight:600;border:1px solid transparent}
+.pill.live{background:rgba(63,185,80,.15);color:var(--ok);border-color:rgba(63,185,80,.4)}
+.pill.dead{background:rgba(248,81,73,.15);color:var(--bad);border-color:rgba(248,81,73,.4)}
+.pill.mode{background:rgba(68,147,248,.15);color:var(--accent);border-color:rgba(68,147,248,.4)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.dot.beat{animation:beat 1.6s ease-in-out infinite}
+@keyframes beat{0%,100%{opacity:1}50%{opacity:.25}}
+.spacer{flex:1}
+.kpis{display:flex;gap:18px;flex-wrap:wrap}
+.kpi{display:flex;flex-direction:column;line-height:1.25}
+.kpi b{font-size:15px;font-variant-numeric:tabular-nums}
+.kpi span{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+main{padding:18px 20px 60px;max-width:1500px;margin:0 auto}
+section{margin-bottom:22px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);
+   margin:0 0 10px;font-weight:650}
+.grid{display:grid;gap:14px}
+.g3{grid-template-columns:repeat(auto-fit,minmax(310px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(420px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card.clickable{cursor:pointer;transition:border-color .12s,transform .12s}
+.card.clickable:hover{border-color:var(--accent)}
+.card h3{margin:0 0 2px;font-size:14px;font-weight:650;display:flex;
+         align-items:center;gap:8px;flex-wrap:wrap}
+.card .sub{color:var(--dim);font-size:12px;margin-bottom:12px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(74px,1fr));gap:8px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+      padding:7px 9px;text-align:left;cursor:pointer;color:inherit;font:inherit;width:100%}
+.stat:hover{border-color:var(--accent)}
+.stat b{display:block;font-size:16px;font-variant-numeric:tabular-nums}
+.stat span{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
+.badge{font-size:10.5px;padding:2px 7px;border-radius:5px;font-weight:650;
+       text-transform:uppercase;letter-spacing:.4px}
+.b-ok{background:rgba(63,185,80,.16);color:var(--ok)}
+.b-warn{background:rgba(210,153,34,.16);color:var(--warn)}
+.b-bad{background:rgba(248,81,73,.16);color:var(--bad)}
+.b-info{background:rgba(163,113,247,.16);color:var(--info)}
+.b-dim{background:var(--panel2);color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;
+   text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;
+   border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+.mono{font-family:var(--mono);font-size:12px}
+.wrap{overflow-x:auto}
+button.act{background:var(--accent);color:#fff;border:0;border-radius:6px;
+           padding:6px 13px;font-size:12.5px;font-weight:600;cursor:pointer}
+button.act:hover{filter:brightness(1.1)}
+button.act.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+button.act.ghost:hover{color:var(--fg);border-color:var(--accent)}
+button.act:disabled{opacity:.4;cursor:not-allowed;filter:none}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+.tab{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+     padding:5px 11px;font-size:12.5px;cursor:pointer;color:var(--muted)}
+.tab.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.empty{color:var(--dim);font-style:italic;padding:14px 4px;font-size:13px}
+.bar{height:5px;border-radius:3px;background:var(--panel2);overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+#toast{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;
+       flex-direction:column;gap:8px;max-width:380px}
+.msg{background:var(--panel);border:1px solid var(--line);border-left-width:3px;
+     border-radius:7px;padding:10px 13px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+.msg.ok{border-left-color:var(--ok)} .msg.err{border-left-color:var(--bad)}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+       border-radius:11px;padding:0;max-width:min(1000px,94vw);width:100%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.dh{display:flex;align-items:center;gap:10px;padding:13px 17px;border-bottom:1px solid var(--line)}
+.dh h3{margin:0;font-size:14.5px;flex:1}
+.db{padding:15px 17px;max-height:68vh;overflow:auto}
+.note{color:var(--dim);font-size:12px;margin-top:9px;line-height:1.55}
+.warnbox{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.35);
+         border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:12px}
+.badbox{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.35);
+        border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>soc-ml<small id="root">…</small></h1>
+  <span id="livePill" class="pill dead"><i class="dot"></i><span>connecting</span></span>
+  <span id="modePill" class="pill mode" hidden></span>
+  <div class="spacer"></div>
+  <div class="kpis">
+    <div class="kpi"><b id="kEps">–</b><span>events/sec</span></div>
+    <div class="kpi"><b id="kEvents">–</b><span>ingested</span></div>
+    <div class="kpi"><b id="kUptime">–</b><span>uptime</span></div>
+    <div class="kpi"><b id="kFired">–</b><span>fires</span></div>
+    <div class="kpi"><b id="kDelivered">–</b><span>delivered</span></div>
+  </div>
+</header>
+
+<main>
+  <div id="alerts"></div>
+
+  <section>
+    <h2>Live ingestion</h2>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="sub" style="margin:0">Measured rate between samples, 5s apart — not the lifetime average.</div>
+        <div class="mono" style="color:var(--dim)" id="chartMeta"></div>
+      </div>
+      <div id="chart" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Deployed use cases</h2>
+    <div id="ucs" class="grid g3"></div>
+  </section>
+
+  <section>
+    <h2>Models &amp; approval</h2>
+    <div id="models" class="grid g2"></div>
+  </section>
+
+  <section>
+    <h2>Capability catalog</h2>
+    <div class="card wrap">
+      <table id="catalog"><thead><tr>
+        <th>Spec</th><th>Slug</th><th>Title</th><th>Status</th>
+        <th>Models</th><th>Features</th><th>Depends on</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+
+<dialog id="modal">
+  <div class="dh"><h3 id="mTitle">–</h3>
+    <button class="act ghost" onclick="document.getElementById('modal').close()">Close</button></div>
+  <div class="db" id="mBody"></div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let TOKEN = sessionStorage.getItem("socml_token") || "";
+let LAST = null, MODELS = null;
+
+const nf = (n) => (n === null || n === undefined) ? "–" : Number(n).toLocaleString();
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function dur(s){
+  if(s === null || s === undefined) return "–";
+  s = Math.floor(s);
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  if(d) return `${d}d ${h}h`;
+  if(h) return `${h}h ${m}m`;
+  return `${m}m ${s%60}s`;
+}
+function bytes(n){
+  if(!n) return "0";
+  const u = ["B","KB","MB","GB"]; let i = 0;
+  while(n >= 1024 && i < u.length-1){ n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + u[i];
+}
+function toast(text, kind){
+  const el = document.createElement("div");
+  el.className = "msg " + (kind || "ok");
+  el.textContent = text;
+  $("toast").appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+async function api(path, opts){
+  const o = Object.assign({headers:{}}, opts || {});
+  if(TOKEN) o.headers["Authorization"] = "Bearer " + TOKEN;
+  if(o.body) o.headers["Content-Type"] = "application/json";
+  const r = await fetch(path, o);
+  const j = await r.json().catch(() => ({error:"bad JSON from server"}));
+  if(!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+/* ---------------------------------------------------------------- header */
+
+function renderHeader(ov){
+  const rt = ov.runtime;
+  $("root").textContent = " " + ov.data_root;
+  const pill = $("livePill");
+  pill.className = "pill " + (rt.live ? "live" : "dead");
+  pill.innerHTML = `<i class="dot ${rt.live?"beat":""}"></i><span>${
+    rt.live ? "LIVE" : "STOPPED"}</span>`;
+  pill.title = rt.last_seen_age_s === null ? "no health file yet"
+    : `health written ${rt.last_seen_age_s}s ago`;
+
+  const mp = $("modePill");
+  if(rt.mode){ mp.hidden = false; mp.textContent = "mode: " + rt.mode; }
+  else mp.hidden = true;
+
+  const fired = ov.usecases.reduce((a,u) => a + (u.fired||0), 0);
+  const deliv = ov.usecases.reduce((a,u) => a + (u.delivered||0), 0);
+  $("kEps").textContent = rt.eps ? Number(rt.eps).toFixed(1) : "–";
+  $("kEvents").textContent = nf(rt.events);
+  $("kUptime").textContent = dur(rt.uptime_s);
+  $("kFired").textContent = nf(fired);
+  $("kDelivered").textContent = nf(deliv);
+
+  const warn = [];
+  if(!rt.live) warn.push(`<div class="badbox"><b>Runtime is not writing health.</b>
+    Nothing has been scored for ${rt.last_seen_age_s === null ? "an unknown period"
+    : dur(rt.last_seen_age_s)}. The detector is stopped or wedged.</div>`);
+  if(rt.dlq) warn.push(`<div class="warnbox"><b>${nf(rt.dlq)} unparseable events</b>
+    in the dead-letter queue — the input contract may not match.</div>`);
+  if(rt.ingest_failed) warn.push(`<div class="warnbox"><b>${nf(rt.ingest_failed)}
+    ingest failures</b> reported by the reader.</div>`);
+  for(const u of ov.usecases){
+    if(u.drift && u.drift.should_retrain)
+      warn.push(`<div class="warnbox"><b>${esc(u.slug)}: model is stale.</b>
+        Drift is <b>${esc(u.drift.band)}</b> (max PSI ${u.drift.max_psi}) on
+        ${u.drift.drifted_features.length} features
+        — <span class="mono">${esc(u.drift.drifted_features.join(", "))}</span>.
+        Retrain and approve a new version below.</div>`);
+    if(u.digested > u.delivered && u.delivered > 0)
+      warn.push(`<div class="warnbox"><b>${esc(u.slug)} is over its daily budget.</b>
+        ${nf(u.digested)} alerts went to the digest against ${nf(u.delivered)} delivered
+        — read <b>fires</b>, not delivered, as this detector's true output.</div>`);
+  }
+  $("alerts").innerHTML = warn.join("");
+}
+
+/* ----------------------------------------------------------------- chart */
+
+function renderChart(ts){
+  const s = (ts.samples || []).filter(x => x.eps !== undefined);
+  const box = $("chart");
+  if(s.length < 2){
+    box.innerHTML = `<div class="empty">Collecting samples — the chart needs
+      ${ts.interval_s}s between points, so it fills in shortly.</div>`;
+    return;
+  }
+  const W = 1000, H = 130, pad = 4;
+  const vals = s.map(x => x.eps);
+  const max = Math.max(...vals, 1) * 1.15;
+  const pts = vals.map((v,i) => {
+    const x = pad + i * (W - 2*pad) / (vals.length - 1);
+    const y = H - pad - (v / max) * (H - 2*pad);
+    return [x, y];
+  });
+  const line = pts.map((p,i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = line + ` L${pts[pts.length-1][0].toFixed(1)} ${H-pad} L${pad} ${H-pad} Z`;
+  const span = (s[s.length-1].t - s[0].t);
+  box.innerHTML = `
+   <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none"
+        role="img" aria-label="events per second over time">
+     <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+       <stop offset="0%" stop-color="var(--accent)" stop-opacity=".35"/>
+       <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+     </linearGradient></defs>
+     <path d="${area}" fill="url(#g)"/>
+     <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2"
+           stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+   </svg>`;
+  $("chartMeta").textContent =
+    `now ${vals[vals.length-1].toFixed(1)}/s · peak ${Math.max(...vals).toFixed(1)}/s · ` +
+    `last ${dur(span)}`;
+}
+
+/* ------------------------------------------------------------- use cases */
+
+function renderUseCases(ov){
+  const box = $("ucs");
+  if(!ov.usecases.length){
+    box.innerHTML = `<div class="card empty">Nothing deployed in this data root.</div>`;
+    return;
+  }
+  box.innerHTML = ov.usecases.map(u => {
+    const d = u.drift || {};
+    const dband = d.band ? `<span class="badge ${
+      d.should_retrain ? "b-bad" : "b-ok"}">drift: ${esc(d.band)}</span>` : "";
+    const budget = u.digested > 0
+      ? `<div class="note">Delivery is capped: ${nf(u.digested)} over budget went to
+         the digest. Fires is the honest number.</div>` : "";
+    return `<div class="card">
+      <h3>${esc(u.slug)}
+        <span class="badge ${u.live ? "b-ok" : "b-bad"}">${u.live ? "active" : "idle"}</span>
+        ${u.mode ? `<span class="badge b-info">${esc(u.mode)}</span>` : ""}
+        ${dband}
+      </h3>
+      <div class="sub">serving <span class="mono">${esc(u.serving || "none")}</span>
+        ${u.candidate ? ` · <span class="badge b-warn">candidate pending</span>` : ""}
+        · ${nf(u.windows)} windows scored</div>
+      <div class="stats">
+        <button class="stat" onclick="openRecords('${esc(u.slug)}','scores')">
+          <b>${nf(u.fired)}</b><span>fires</span></button>
+        <button class="stat" onclick="openRecords('${esc(u.slug)}','alerts')">
+          <b>${nf(u.delivered)}</b><span>delivered</span></button>
+        <button class="stat" onclick="openRecords('${esc(u.slug)}','suppressed')">
+          <b>${nf(u.suppressed)}</b><span>suppressed</span></button>
+        <button class="stat" onclick="openRecords('${esc(u.slug)}','digest')">
+          <b>${nf(u.digested)}</b><span>digested</span></button>
+        <button class="stat" onclick="openUseCase('${esc(u.slug)}')">
+          <b>${u.fired_per_day === null ? "–" : u.fired_per_day}</b><span>fires/day</span></button>
+        <button class="stat" onclick="openUseCase('${esc(u.slug)}')">
+          <b>${u.fire_rate_pct === null ? "–" : u.fire_rate_pct + "%"}</b><span>of windows</span></button>
+      </div>${budget}
+    </div>`;
+  }).join("");
+}
+
+function openUseCase(slug){
+  const u = (LAST?.usecases || []).find(x => x.slug === slug);
+  if(!u) return;
+  const f = u.files || {};
+  $("mTitle").textContent = slug + " — detail";
+  $("mBody").innerHTML = `
+    <table>
+      <tr><th>mode</th><td>${esc(u.mode || "–")}</td></tr>
+      <tr><th>serving bundle</th><td class="mono">${esc(u.serving || "none")}</td></tr>
+      <tr><th>loaded bundle</th><td class="mono">${esc(u.bundle_version || "–")}</td></tr>
+      <tr><th>candidate</th><td class="mono">${esc(u.candidate || "none")}</td></tr>
+      <tr><th>uptime</th><td>${dur(u.uptime_s)}</td></tr>
+      <tr><th>windows scored</th><td>${nf(u.windows)}</td></tr>
+      <tr><th>open windows</th><td>${nf(u.open_windows)}</td></tr>
+      <tr><th>entity annotations</th><td>${nf(u.entity_annotations)}</td></tr>
+      <tr><th>fires</th><td>${nf(u.fired)} (${u.fired_per_day ?? "–"}/day,
+          ${u.fire_rate_pct ?? "–"}% of windows)</td></tr>
+      <tr><th>delivered</th><td>${nf(u.delivered)} (${u.delivered_per_day ?? "–"}/day)</td></tr>
+      <tr><th>folded (dedup)</th><td>${nf(u.folded)}</td></tr>
+      <tr><th>digested (budget)</th><td>${nf(u.digested)}</td></tr>
+      <tr><th>suppressed</th><td>${nf(u.suppressed)}</td></tr>
+      <tr><th>drift</th><td>${esc(u.drift?.band || "–")} · max PSI
+          ${u.drift?.max_psi ?? "–"}${u.drift?.should_retrain ? " · retrain recommended" : ""}</td></tr>
+      <tr><th>artifacts</th><td class="mono">alerts ${bytes(f.alerts)} ·
+          scores ${bytes(f.scores)} · shadow ${bytes(f.shadow)} ·
+          digest ${bytes(f.digest)} · suppressed ${bytes(f.suppressed)}</td></tr>
+    </table>
+    <div class="note">A fire is one window whose gate opened. It lands in exactly one
+    of delivered / folded / digested / suppressed, so those four always sum to fires.</div>`;
+  $("modal").showModal();
+}
+
+/* --------------------------------------------------------------- records */
+
+const RECORD_KINDS = ["scores","alerts","digest","suppressed","shadow"];
+let RECORD_SLUG = null, RECORD_KIND = "scores";
+
+async function openRecords(slug, kind){
+  RECORD_SLUG = slug; RECORD_KIND = kind;
+  $("mTitle").textContent = slug + " — records";
+  $("modal").showModal();
+  await loadRecords();
+}
+
+async function loadRecords(){
+  $("mBody").innerHTML = `<div class="tabs">${RECORD_KINDS.map(k =>
+    `<button class="tab ${k===RECORD_KIND?"on":""}"
+      onclick="RECORD_KIND='${k}';loadRecords()">${k}</button>`).join("")}</div>
+    <div class="empty">loading…</div>`;
+  let data;
+  try{ data = await api(`/api/records?kind=${encodeURIComponent(RECORD_KIND)}&slug=${
+    encodeURIComponent(RECORD_SLUG)}&limit=150`); }
+  catch(e){ $("mBody").innerHTML = `<div class="badbox">${esc(e.message)}</div>`; return; }
+
+  const tabs = `<div class="tabs">${RECORD_KINDS.map(k =>
+    `<button class="tab ${k===RECORD_KIND?"on":""}"
+      onclick="RECORD_KIND='${k}';loadRecords()">${k}</button>`).join("")}</div>`;
+  if(!data.rows.length){
+    $("mBody").innerHTML = tabs + `<div class="empty">${
+      data.exists ? "File is empty." :
+      RECORD_KIND === "scores"
+        ? "No score log. A runtime started before the live-mode score log was added writes none — restart it to get per-fire records."
+        : "No file for this kind yet."}</div>`;
+    return;
+  }
+  const cols = [...new Set(data.rows.flatMap(r => Object.keys(flat(r))))].slice(0, 11);
+  $("mBody").innerHTML = tabs + `<div class="wrap"><table>
+    <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${data.rows.map(r => { const f = flat(r);
+      return `<tr>${cols.map(c => `<td class="mono">${esc(short(f[c]))}</td>`).join("")}</tr>`;
+    }).join("")}</tbody></table></div>
+    <div class="note">Newest first · ${data.rows.length} of ${bytes(data.size)} on disk.</div>`;
+}
+
+function flat(o, prefix){
+  const out = {};
+  for(const [k,v] of Object.entries(o || {})){
+    const key = prefix ? prefix + "." + k : k;
+    if(v && typeof v === "object" && !Array.isArray(v)) Object.assign(out, flat(v, key));
+    else out[key] = v;
+  }
+  return out;
+}
+function short(v){
+  if(v === null || v === undefined) return "";
+  const s = Array.isArray(v) ? v.join(", ") : String(v);
+  return s.length > 90 ? s.slice(0, 88) + "…" : s;
+}
+
+/* ---------------------------------------------------------------- models */
+
+function renderModels(m){
+  MODELS = m;
+  const box = $("models");
+  if(!m.usecases.length){
+    box.innerHTML = `<div class="card empty">No model registry in this data root.</div>`;
+    return;
+  }
+  box.innerHTML = m.usecases.map(u => `
+    <div class="card">
+      <h3>${esc(u.slug)}
+        ${u.candidate ? `<span class="badge b-warn">approval pending</span>`
+                      : `<span class="badge b-dim">no candidate</span>`}</h3>
+      <div class="sub">serving <span class="mono">${esc(u.serving || "none")}</span></div>
+      <div class="wrap"><table>
+        <thead><tr><th>Version</th><th>Status</th><th>Trained</th>
+          <th>Windows</th><th></th></tr></thead>
+        <tbody>${u.versions.map(v => `
+          <tr>
+            <td class="mono">${esc(v.version)}</td>
+            <td><span class="badge ${
+              v.status === "approved" ? "b-ok" :
+              v.status === "pending"  ? "b-warn" : "b-dim"}">${
+              v.status === "approved" ? "approved · serving" :
+              v.status === "pending"  ? "pending approval" : "retained"}</span></td>
+            <td>${esc((v.trained_at || "").replace("T"," ").slice(0,16) || "–")}</td>
+            <td>${nf(v.train_windows)}</td>
+            <td>${v.status === "approved" ? "" :
+              `<button class="act" onclick="approve('${esc(u.slug)}','${esc(v.version)}')">
+                 Approve</button>`}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+      <div class="row" style="margin-top:11px">
+        <button class="act ghost" ${u.can_rollback ? "" : "disabled"}
+          onclick="rollback('${esc(u.slug)}')">Roll back to previous</button>
+        <span class="note" style="margin:0">Approving repoints <span class="mono">current</span>;
+          the running detector picks it up on its next restart.</span>
+      </div>
+    </div>`).join("");
+}
+
+async function ensureToken(){
+  if(TOKEN) return true;
+  const h = await api("/api/health").catch(() => null);
+  if(h && !h.requires_token) return true;
+  const t = prompt("This server requires the bearer token printed at startup:");
+  if(!t) return false;
+  TOKEN = t.trim(); sessionStorage.setItem("socml_token", TOKEN);
+  return true;
+}
+
+async function approve(slug, version){
+  if(!confirm(`Approve ${version} for ${slug}?\n\nThis repoints the serving pointer. `
+    + `The running detector keeps its loaded model until restarted.`)) return;
+  if(!await ensureToken()) return;
+  try{
+    const r = await api("/api/models/promote", {method:"POST",
+      body: JSON.stringify({slug, version})});
+    toast(`${slug}: approved ${r.promoted}`, "ok");
+    refresh();
+  }catch(e){ toast("Approve failed: " + e.message, "err"); }
+}
+
+async function rollback(slug){
+  if(!confirm(`Roll ${slug} back to the previous version?`)) return;
+  if(!await ensureToken()) return;
+  try{
+    const r = await api("/api/models/rollback", {method:"POST",
+      body: JSON.stringify({slug})});
+    toast(`${slug}: rolled back to ${r.rolled_back_to}`, "ok");
+    refresh();
+  }catch(e){ toast("Rollback failed: " + e.message, "err"); }
+}
+
+/* --------------------------------------------------------------- catalog */
+
+function renderCatalog(rows){
+  $("catalog").querySelector("tbody").innerHTML = rows.map(r => `
+    <tr>
+      <td class="mono">${esc(r.id)}</td>
+      <td class="mono">${esc(r.slug)}</td>
+      <td>${esc(r.title)}</td>
+      <td>${r.deployed ? `<span class="badge b-ok">deployed</span>`
+           : r.implemented ? `<span class="badge b-info">built</span>`
+           : `<span class="badge b-dim">planned</span>`}</td>
+      <td class="mono">${esc((r.models || []).join(", ") || "–")}</td>
+      <td>${r.features || "–"}</td>
+      <td class="mono">${esc((r.depends_on || []).join(", ") || "–")}</td>
+    </tr>`).join("");
+}
+
+/* ----------------------------------------------------------------- loop */
+
+async function refresh(){
+  try{
+    const [ov, ts, md, cat] = await Promise.all([
+      api("/api/overview"), api("/api/timeseries"),
+      api("/api/models"), api("/api/catalog"),
+    ]);
+    LAST = ov;
+    renderHeader(ov); renderChart(ts); renderUseCases(ov);
+    renderModels(md); renderCatalog(cat.usecases);
+  }catch(e){
+    const pill = $("livePill");
+    pill.className = "pill dead";
+    pill.innerHTML = `<i class="dot"></i><span>server unreachable</span>`;
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
