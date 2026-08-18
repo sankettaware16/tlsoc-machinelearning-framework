@@ -43,7 +43,6 @@ from soc_ml.features.window_features import WindowFeatureBuilder  # noqa: E402
 from soc_ml.ingest.file import FileSource  # noqa: E402
 from soc_ml.registry.store import ModelRegistry  # noqa: E402
 
-
 #: This is slow enough to be run redirected to a file, where Python buffers
 #: stdout and the run looks hung for minutes.
 print = functools.partial(builtins.print, flush=True)  # noqa: A001
