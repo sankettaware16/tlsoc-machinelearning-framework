@@ -10,6 +10,72 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-08-18 — Every production alert was an artifact of the error channel
+
+### D-025 · A web log is not all requests: nginx's error stream was being scored as traffic
+
+**Context.** An operator pulled the raw events behind one `web_recon` alert —
+157.51.4.183, severity high, 46 "distinct paths" — and found an iPhone loading
+the IIT Bombay homepage. Nginx rate-limited the browser's asset burst; the alert
+was the rate-limiting, not an attacker.
+
+**What actually happened.** The parser writes nginx's **error channel** into the
+same stream as access records, correctly labelled `event.type: "error"`,
+`log.level: "error"`, `event.reason: "nginx_limit_req"`. `Event.from_ecs` never
+read `event.type`, so the framework could not tell the two apart. On the live
+elkcc feed that is **32.1% of all events** — measured, not estimated.
+
+Error records name a URL but carry no user-agent, no status and no bytes. Three
+consequences, each visible in the production data:
+
+1. **A phantom entity.** No user-agent means `ua_hash` is SHA-256 of the empty
+   string. Every entity that fired carried `e3b0c44298fc1c14` — one bucket
+   collecting the rate-limited fragments of every real visitor on the server.
+2. **A fabricated top feature.** Error records log the whole request target, so
+   `url.path` arrives as `/core/misc/drupal.js?v=9.3.22`. `_extension` documented
+   the assumption "query strings never reach here" and therefore never stripped
+   one, so the extension read as `js?v=9` — not alphanumeric, hence unknown.
+   `web.unknown_ext_ratio` reached **0.6522 against a population median of 0.0**
+   (deviation 999) and became the top feature in the alert. Roughly every
+   versioned asset a CMS serves counted as "a file type this app does not serve".
+3. **A third of the work, wasted**, and multiplied by every use case.
+
+**Decision.** `Event` now carries `event.category`/`event.type`, and `FileSource`
+drops non-request records at ingest — before any feature fold, since that is
+where the cost multiplies. The skip is **counted** (`skipped_non_request`,
+surfaced in health and the console), never silent: a third of a stream
+disappearing must be a number an operator can read (NFR-09). Only a *positive*
+non-access label excludes a record — a producer that sets no `event.type`
+(Filebeat, Vector) is still processed, because assuming the worst about a silent
+producer would drop real traffic. `_extension` strips the query string
+defensively, the contract notwithstanding.
+
+**Why the filter is at ingest and not in the gate.** Tightening a gate to reject
+these would have hidden the cause and kept paying for it. The records are not
+bad requests; they are not requests.
+
+**This is D-014's lesson again**, and it is worth naming: that entry concluded
+*"diagnosing a live component from a stale artifact"* was the error. Here the
+error was trusting the contract's word — "query strings never reach here" — over
+the stream. The framework validates its input rather than assuming a correct
+producer (D-012); that discipline had not been extended to `event.type`.
+
+**Rules out.** Treating every record in a web log as a request; trusting the
+contract's field separation without checking; any silent input filter.
+
+**Measured on the box.** With two use cases at 12-25 events/s the detector cost
+**31% of one core and 150 MB RSS** — while Elasticsearch on the same 4-core host
+held 19.4 GB and most of the CPU. soc-ml was never the load; but the per-event
+cost is paid once *per use case* (D-020's private feature builders), so the
+32% cut matters most for the 10-15 use cases the deployment is aiming at.
+
+**Lives in.** `core/contracts.py` (`Event.event_type`, `Event.is_request`),
+`ingest/file.py` (`skipped_non_request`), `baseline/profile.py` (`_extension`),
+`detection/runtime.py` (health), `web/` (console),
+`tests/test_non_request_records.py`.
+
+---
+
 ## 2026-08-18 — Ground truth: the 17 August DDoS, measured against the live run
 
 ### D-024 · The engine ingested a 6M-request flood and said nothing — by construction, not by defect

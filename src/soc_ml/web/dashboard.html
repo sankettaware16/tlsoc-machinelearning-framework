@@ -403,30 +403,64 @@ async function loadRecords(){
         : "No file for this kind yet."}</div>`;
     return;
   }
-  const cols = [...new Set(data.rows.flatMap(r => Object.keys(flat(r))))].slice(0, 11);
-  $("mBody").innerHTML = tabs + `<div class="wrap"><table>
-    <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
-    <tbody>${data.rows.map(r => { const f = flat(r);
-      return `<tr>${cols.map(c => `<td class="mono">${esc(short(f[c]))}</td>`).join("")}</tr>`;
-    }).join("")}</tbody></table></div>
-    <div class="note">Newest first · ${data.rows.length} of ${bytes(data.size)} on disk.</div>`;
+  $("mBody").innerHTML = tabs +
+    data.rows.map((r, i) => renderRecord(r, i, RECORD_KIND)).join("") +
+    `<div class="note">Newest first · ${data.rows.length} shown of ${bytes(data.size)} on disk.</div>`;
 }
 
-function flat(o, prefix){
-  const out = {};
-  for(const [k,v] of Object.entries(o || {})){
-    const key = prefix ? prefix + "." + k : k;
-    if(v && typeof v === "object" && !Array.isArray(v)) Object.assign(out, flat(v, key));
-    else out[key] = v;
-  }
-  return out;
-}
-function short(v){
-  if(v === null || v === undefined) return "";
-  const s = Array.isArray(v) ? v.join(", ") : String(v);
-  return s.length > 90 ? s.slice(0, 88) + "…" : s;
-}
+/* A record is only useful if you can tell from it whether the alert is real,
+   so show what the detector actually saw: what fired, why, and the raw log
+   lines behind it — not a grid of hashes. */
+function renderRecord(r, i, kind){
+  const e = r.entity || {};
+  const who = typeof e === "object"
+    ? `${esc(e.ip || "?")} <span style="color:var(--dim)">on ${esc(e.server || "?")}</span>`
+    : esc(String(r.entity ?? "?").split("|").slice(0,2).reverse().join(" on "));
+  const when = esc((r["@timestamp"] || r.window_end || "").replace("T", " ").slice(0, 19));
+  const sev = (r.alert || {}).severity || r.severity;
+  const score = (r.alert || {}).severity_score;
+  const nar = (r.explanation || {}).narrative || r.narrative;
+  const feats = (r.explanation || {}).top_features || [];
+  const ev = (r.explanation || {}).evidence_events || [];
+  const disp = r.disposition ? `<span class="badge b-info">${esc(r.disposition)}</span>` : "";
+  const supp = r.suppressed_by || r.downweighted_by;
 
+  return `<div class="card" style="margin-bottom:10px">
+    <h3>${who}
+      ${sev ? `<span class="badge ${sev === "critical" ? "b-bad"
+        : sev === "high" ? "b-warn" : "b-dim"}">${esc(sev)}${
+        score ? " " + score : ""}</span>` : ""}
+      ${disp}
+      <span style="color:var(--dim);font-weight:400;font-size:12px">${when}</span>
+    </h3>
+    ${nar ? `<div style="margin:2px 0 10px">${esc(nar)}</div>` : ""}
+    ${supp ? `<div class="warnbox" style="margin:0 0 10px">${esc(supp)}</div>` : ""}
+    ${feats.length ? `<div class="wrap"><table>
+      <thead><tr><th>What stood out</th><th>this entity</th><th>server median</th>
+        <th>server p99</th><th>how far out</th></tr></thead>
+      <tbody>${feats.map(f => `<tr>
+        <td class="mono">${esc(f.feature)}</td>
+        <td class="mono"><b>${esc(f.value)}</b></td>
+        <td class="mono">${esc(f.population_p50)}</td>
+        <td class="mono">${esc(f.population_p99)}</td>
+        <td>${f.deviation >= 100 ? `<span class="badge b-bad">off the scale</span>`
+             : `<span class="badge ${f.deviation >= 1 ? "b-warn" : "b-dim"}">${
+                esc(f.deviation)}x</span>`}</td>
+      </tr>`).join("")}</tbody></table></div>` : ""}
+    ${!feats.length && !nar && r.fused_pct === undefined
+      ? `<div class="mono" style="font-size:11.5px;color:var(--dim)">${
+          esc(JSON.stringify(r).slice(0, 400))}</div>` : ""}
+    ${ev.length ? `<details style="margin-top:9px">
+      <summary style="cursor:pointer;color:var(--accent);font-size:12.5px">
+        ${ev.length} raw log line${ev.length === 1 ? "" : "s"} — the actual evidence</summary>
+      <pre class="mono" style="white-space:pre-wrap;word-break:break-all;background:var(--panel2);
+        border:1px solid var(--line);border-radius:6px;padding:9px;margin-top:7px;
+        font-size:11px;max-height:300px;overflow:auto">${esc(ev.join("\n\n"))}</pre>
+    </details>` : ""}
+    ${r.fused_pct !== undefined ? `<div class="note" style="margin-top:8px">
+      fused percentile ${esc(r.fused_pct)} · ${esc(r.event_count)} events in the window</div>` : ""}
+  </div>`;
+}
 /* ---------------------------------------------------------------- models */
 
 function renderModels(m){
