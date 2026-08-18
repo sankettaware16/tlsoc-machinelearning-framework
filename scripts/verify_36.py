@@ -310,6 +310,48 @@ def reconstruct_from_health(healths: dict) -> dict:
     return out
 
 
+def section_scores(state: Path, nets) -> None:
+    """Per-fire detail from the live-mode score log, where one exists."""
+    present = [s for s in SLUGS if (state / f"{s}_scores.ndjson").exists()]
+    if not present:
+        print("\n  No *_scores.ndjson yet — this runtime predates the live-mode")
+        print("  score log, so per-fire reasons (especially down-weights) are")
+        print("  not recorded. Restart it on the current build to get them.")
+        return
+    for slug in present:
+        p = state / f"{slug}_scores.ndjson"
+        sub(f"{slug}_scores.ndjson — per-fire detail")
+        disp = Counter()
+        supp_reasons = Counter()
+        down_reasons = Counter()
+        delivered_entities = Counter()
+        for row in stream(p):
+            disp[row.get("disposition", "?")] += 1
+            if row.get("suppressed_by"):
+                supp_reasons[row["suppressed_by"]] += 1
+            if row.get("downweighted_by"):
+                down_reasons[row["downweighted_by"]] += 1
+            if row.get("disposition") == "delivered":
+                delivered_entities[row.get("entity", "?")] += 1
+        print(f"  dispositions: {dict(disp)}")
+        for title, counter in (("suppression reasons", supp_reasons),
+                               ("down-weight reasons", down_reasons)):
+            if counter:
+                print(f"  {title}:")
+                for reason, n in counter.most_common(8):
+                    print(f"    {n:>7,}  {reason}")
+        if delivered_entities:
+            print("  top delivered entities:")
+            for ent, n in delivered_entities.most_common(10):
+                fam = None
+                for tok in str(ent).replace("|", " ").split():
+                    fam = crawler_family(tok.strip("()'\" "), nets)
+                    if fam:
+                        break
+                flag = f"   <-- {fam.upper()} STILL DELIVERED" if fam else ""
+                print(f"    {n:>7,}  {ent}{flag}")
+
+
 def section_shadow(state: Path, nets, healths: dict) -> dict:
     hr("5. THE BEFORE/AFTER MEASUREMENT  (exit criterion 1)")
     print("Every score is recorded in the shadow log whether or not it fired,")
@@ -326,7 +368,9 @@ def section_shadow(state: Path, nets, healths: dict) -> dict:
         print("     score rows in live mode (runtime.py `_handle`). Any shadow file")
         print("     below is a leftover from an earlier shadow run. Falling back to")
         print("     the health counters, which are current.")
-        return reconstruct_from_health(healths)
+        result = reconstruct_from_health(healths)
+        section_scores(state, nets)
+        return result
 
     summary = {}
     for slug in SLUGS:
@@ -479,7 +523,8 @@ def section_side_files(state: Path) -> None:
                 note = ""
                 if kind == "digest" and n:
                     note = "   <-- OVER DAILY BUDGET (overflow, not dropped)"
-                print(f"  {slug}_{kind}.ndjson: {n:,} lines   ({human_size(p.stat().st_size)}){note}")
+                size = human_size(p.stat().st_size)
+                print(f"  {slug}_{kind}.ndjson: {n:,} lines   ({size}){note}")
             else:
                 print(f"  {slug}_{kind}.ndjson: (absent)")
         p = state / f"{slug}_drift.json"
@@ -571,7 +616,7 @@ def main() -> int:
     data = Path(args.out).expanduser().resolve()
     state = data / "state"
 
-    print(f"soc-ml Phase 3.6 verification")
+    print("soc-ml Phase 3.6 verification")
     print(f"host: {os.uname().nodename}   cwd: {Path.cwd()}")
     print(f"data root: {data}   exists: {data.is_dir()}")
     if not data.is_dir():

@@ -142,6 +142,7 @@ class _UseCaseRunner:
         self.reservoir: dict[str, list[float]] = {}
         self.sink: Sink | None = None
         self.shadow_fh = None
+        self.scores_fh = None
         self.digest_fh = None
         self.suppressed_fh = None
         self.stats = {
@@ -234,6 +235,10 @@ class DetectionRuntime:
                 now = time.monotonic()
                 if now - last_ckpt >= self.cfg.checkpoint_every_s:
                     self._save_checkpoint(source)
+                    # Flush on the same tick: a checkpoint that outruns the
+                    # records it refers to would, after an unclean kill, claim
+                    # events were processed whose alerts never reached disk.
+                    self._flush_outputs()
                     last_ckpt = now
                 if now - last_health >= self.cfg.health_every_s:
                     self._write_health(source)
@@ -329,34 +334,40 @@ class DetectionRuntime:
 
         if self.cfg.mode == "live":
             if outcome.fired and outcome.alert is not None:
-                self._deliver(runner, outcome)
+                # The delivery decision is recorded even when it removes the
+                # alert. D-023: a delivery modification that cannot be measured
+                # from the score log is a defect in itself, and `downweighted_by`
+                # lives nowhere else once an alert is folded or digested.
+                self._score_record(runner, outcome, self._deliver(runner, outcome))
         else:
             # observe / shadow: record everything, deliver nothing.
             self._shadow_record(runner, outcome)
 
-    def _deliver(self, runner: _UseCaseRunner, outcome) -> None:
+    def _deliver(self, runner: _UseCaseRunner, outcome) -> str:
+        """Apply the delivery pipeline; returns the disposition for the record."""
         # 0. An upstream-suppressed alert never reaches the queue — but it is
         #    written, with its reason, to the per-slug suppressed log (NFR-09).
         if not outcome.alert.delivered:
             self._record_suppressed(runner, outcome.alert)
             runner.stats["alerts_suppressed"] += 1
             self.stats["alerts_suppressed"] += 1
-            return
+            return "suppressed"
         # 1. Fold repeats of the same entity into one open alert (dedup).
         decision = runner.dedup.decide(outcome.alert)
         if not decision.deliver:
             runner.stats["alerts_folded"] += 1
             self.stats["alerts_folded"] += 1
-            return
+            return "folded"
         # 2. Cap daily delivery per server; overflow -> digest, never dropped.
         if runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
             self._digest(runner, outcome.alert)
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
-            return
+            return "digested"
         runner.sink.emit_alert(outcome.alert)
         runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1
+        return "delivered"
 
     def _digest(self, runner: _UseCaseRunner, alert) -> None:
         if runner.digest_fh is None:
@@ -394,6 +405,20 @@ class DetectionRuntime:
             runner.shadow_fh = path.open("a", encoding="utf-8")
         row = {**outcome.record(), "would_alert": outcome.fired}
         runner.shadow_fh.write(json.dumps(row) + "\n")
+
+    def _score_record(self, runner: _UseCaseRunner, outcome, disposition: str) -> None:
+        """Live-mode audit line for a window that fired.
+
+        Kept in its own file rather than appended to the shadow log: shadow
+        mode records *every* window and live mode only the ones that fired, so
+        one file holding both would silently mix two different populations —
+        and a leftover shadow file would read as current.
+        """
+        if runner.scores_fh is None:
+            path = self.state_dir / f"{runner.slug}_scores.ndjson"
+            runner.scores_fh = path.open("a", encoding="utf-8")
+        row = {**outcome.record(), "disposition": disposition}
+        runner.scores_fh.write(json.dumps(row) + "\n")
 
     # ------------------------------------------------------------------ #
     # Drift
@@ -471,6 +496,23 @@ class DetectionRuntime:
         tmp.write_text(json.dumps(doc), encoding="utf-8")
         tmp.replace(self._ckpt_path())
 
+    def _flush_outputs(self) -> None:
+        """Push every buffered record to disk. Safe to call at any time.
+
+        Runs on a timer, so it can land after a handle has been closed by the
+        shutdown path. A flush is never important enough to take the runtime
+        down with it — the data it would have written is already gone.
+        """
+        for runner in self.runners:
+            for target in (runner.sink, runner.shadow_fh, runner.scores_fh,
+                           runner.digest_fh, runner.suppressed_fh):
+                if target is None:
+                    continue
+                try:
+                    target.flush()
+                except ValueError:  # already closed
+                    pass
+
     def _write_health(self, source: FileSource) -> None:
         uptime = time.monotonic() - self._started
         for runner in self.runners:
@@ -528,12 +570,10 @@ class DetectionRuntime:
                 runner.sink.flush()
                 if hasattr(runner.sink, "close"):
                     runner.sink.close()
-            if runner.shadow_fh:
-                runner.shadow_fh.close()
-            if runner.digest_fh:
-                runner.digest_fh.close()
-            if runner.suppressed_fh:
-                runner.suppressed_fh.close()
+            for fh in (runner.shadow_fh, runner.scores_fh,
+                       runner.digest_fh, runner.suppressed_fh):
+                if fh:
+                    fh.close()
         source.close()
         self.log(
             f"[runtime] stopped — {self.stats['events']:,} events, "
