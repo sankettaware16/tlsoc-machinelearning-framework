@@ -74,14 +74,27 @@ deployed detectors cover availability attacks.
 
 - **Live mode wrote no score log at all.** `_handle` called `_shadow_record`
   only in the non-live branch, so `ScoreResult.record()` — documented as "the
-  always-written audit line" — was written never, and `downweighted_by` was
-  observable nowhere. That is exactly the invisibility D-023 called a defect in
-  itself, reintroduced for every live deployment. Live mode now writes one row
-  per fire to `<slug>_scores.ndjson`, carrying the delivery `disposition`
-  (delivered / folded / digested / suppressed). Separate file from the shadow
-  log deliberately: shadow records every window and live only the fires, so one
+  always-written audit line" — was written never. `downweighted_by` survived
+  only on *delivered* alerts, via `Alert.links` (34 of elkcc's 42 carried it),
+  and was therefore invisible for the ~98% of fires that were folded, digested
+  or suppressed. That is the invisibility D-023 called a defect in itself,
+  reintroduced for every live deployment. Live mode now writes one row per fire
+  to `<slug>_scores.ndjson`, carrying the delivery `disposition` (delivered /
+  folded / digested / suppressed). Separate file from the shadow log
+  deliberately: shadow records every window and live only the fires, so one
   file would mix two populations — and a stale shadow file would read as
   current, which is how eleven days of elkcc data was nearly misread.
+
+  **First five minutes on the restarted runtime already paid for it:** all 11
+  `web_recon` fires carried `downweighted_by: known/borderline automation`, and
+  every firing entity had `ua_hash e3b0c44298fc1c14` — SHA-256 of the empty
+  string, i.e. no user-agent. Across the previous eleven days the same
+  down-weight sits on 34 of 42 delivered alerts. A modifier that applies to
+  ~81-100% of alerts is not discriminating between them; it is a constant
+  severity offset. Whether D-022's `BORDERLINE_HUMAN_LIKENESS` rule belongs on
+  a *reconnaissance* detector at all is now an open question — for UC-02, low
+  human-likeness arguably aggravates rather than mitigates — and it is a
+  question that could not even be asked before the score log existed.
 - **Records only reached disk at shutdown.** No periodic flush existed, so
   `SIGHUP`/`SIGKILL` lost whatever sat in a buffer; on elkcc that hid 7 of 76
   suppressions. Flushing now rides the checkpoint tick, deliberately not later
