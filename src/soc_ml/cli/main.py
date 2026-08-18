@@ -591,6 +591,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    """Serve the operator dashboard over HTTP(S)."""
+    from soc_ml.web.server import serve
+
+    return serve(
+        data_root=args.out,
+        host=args.host,
+        port=args.port,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+        token=args.token,
+        read_only=args.read_only,
+        allow_remote=args.allow_remote,
+        verbose=args.verbose,
+    )
+
+
 def cmd_not_implemented(args: argparse.Namespace) -> int:
     print(f"[ERROR] '{args.command}' {_NOT_YET}", file=sys.stderr)
     return 3
@@ -684,6 +701,22 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--uc", default="web_recon", help="use case slug")
     st.add_argument("--out", default="data", help="registry/data root")
     st.set_defaults(func=cmd_status)
+
+    ui = sub.add_parser("ui", help="serve the operator dashboard (read-mostly)")
+    ui.add_argument("--out", default="data", help="registry/data root to display")
+    ui.add_argument("--host", default="127.0.0.1",
+                    help="bind address (default loopback — use an SSH tunnel for remote)")
+    ui.add_argument("--port", type=int, default=8888, help="listen port")
+    ui.add_argument("--tls-cert", dest="tls_cert", help="PEM certificate; enables HTTPS")
+    ui.add_argument("--tls-key", dest="tls_key", help="PEM private key (default: --tls-cert)")
+    ui.add_argument("--token", help="bearer token for write actions "
+                                    "(default: generated when not loopback)")
+    ui.add_argument("--read-only", action="store_true", dest="read_only",
+                    help="disable model promotion entirely")
+    ui.add_argument("--allow-remote", action="store_true", dest="allow_remote",
+                    help="permit a non-loopback bind without TLS (accepts the risk)")
+    ui.add_argument("--verbose", action="store_true", help="log every request")
+    ui.set_defaults(func=cmd_ui)
 
     sub.add_parser("version", help="show version").set_defaults(
         func=lambda a: (print(_version()), 0)[1]
