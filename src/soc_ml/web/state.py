@@ -213,6 +213,7 @@ class DashboardState:
                 "windows": health.get("windows"),
                 "open_windows": health.get("open_windows"),
                 "ingest_failed": health.get("ingest_failed"),
+                "ingest_skipped_non_request": health.get("ingest_skipped_non_request"),
                 "entity_annotations": health.get("entity_annotations"),
                 "delivered": health.get("alerts_delivered", 0),
                 "folded": health.get("alerts_folded", 0),
@@ -253,6 +254,9 @@ class DashboardState:
                 "uptime_s": max((u.get("uptime_s") or 0) for u in usecases) if usecases else 0,
                 "ingest_failed": max(
                     (u.get("ingest_failed") or 0) for u in usecases) if usecases else 0,
+                "skipped_non_request": max(
+                    (u.get("ingest_skipped_non_request") or 0)
+                    for u in usecases) if usecases else 0,
                 "dlq": self._dlq_count(),
             },
             "usecases": usecases,

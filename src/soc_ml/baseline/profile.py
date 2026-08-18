@@ -172,9 +172,16 @@ class EnvironmentProfile:
 def _extension(path: str) -> str | None:
     """File extension of a URL path, lowercased, or None.
 
-    Only the last segment counts, and query strings never reach here (they are
-    a separate field in the contract).
+    Only the last segment counts. The contract puts the query string in its own
+    field, but a real producer does not always honour that — nginx's error
+    channel logs the whole request target, so ``/core/misc/drupal.js?v=9.3.22``
+    arrives as a path. Left unstripped, that reads as the unknown extension
+    ``js?v=9`` and every versioned asset a CMS serves counts as "a file type
+    this app does not serve". On production that one omission drove
+    ``web.unknown_ext_ratio`` to 0.65 against a population median of 0.0 and
+    became the top feature behind a false directory-enumeration alert (D-025).
     """
+    path = path.split("?", 1)[0].split("#", 1)[0]
     last = path.rsplit("/", 1)[-1]
     if "." not in last or last.startswith("."):
         return None

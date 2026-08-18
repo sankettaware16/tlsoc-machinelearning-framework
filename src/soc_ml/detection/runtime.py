@@ -526,6 +526,7 @@ class DetectionRuntime:
                 "events": self.stats["events"],
                 "open_windows": runner.builder.open_count if runner.builder else 0,
                 "ingest_failed": source.stats.failed,
+                "ingest_skipped_non_request": source.stats.skipped_non_request,
                 "entity_annotations": self.annotations.size,
                 **runner.stats,
             }

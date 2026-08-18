@@ -150,6 +150,12 @@ class Event:
 
     user_agent: str | None = None
 
+    #: ECS ``event.category`` / ``event.type``. Kept because a web log carries
+    #: more than requests: nginx writes its *error* channel to the same stream,
+    #: and an error record is not a request even though it names a URL.
+    event_category: str | None = None
+    event_type: str | None = None
+
     module: str | None = None
     #: Raw log line. Evidence for humans only — NEVER a model input (FR-05).
     original: str | None = None
@@ -245,9 +251,28 @@ class Event:
             url_path=url.get("path"),
             url_query=url.get("query"),
             user_agent=(doc.get("user_agent") or {}).get("original"),
+            event_category=evt.get("category"),
+            event_type=evt.get("type"),
             module=evt.get("module"),
             original=evt.get("original"),
         )
+
+    @property
+    def is_request(self) -> bool:
+        """Does this record describe a request a client actually made?
+
+        A web log stream is not all requests. nginx's error channel lands in
+        the same file and the parser labels it ``event.type: error`` — those
+        records name a URL but carry no status, no bytes and no user-agent, so
+        folding them into request features invents an entity that made
+        "requests" no browser made.
+
+        Only a *positive* non-access label excludes a record. A shipper that
+        sets no ``event.type`` (Filebeat, Vector, a hand-rolled producer) still
+        gets its events processed — the contract asks for access logs, and
+        assuming the worst about a silent producer would drop real traffic.
+        """
+        return self.event_type is None or self.event_type == "access"
 
 
 @dataclass(frozen=True, slots=True)

@@ -54,6 +54,10 @@ class IngestStats:
     lines_read: int = 0
     parsed: int = 0
     failed: int = 0
+    #: Parsed fine, but not a request (nginx error-channel records). Counted
+    #: rather than silently dropped — a third of a real nginx stream lands
+    #: here, and that is a number an operator must be able to see (NFR-09).
+    skipped_non_request: int = 0
     reasons: dict[str, int] = field(default_factory=dict)
 
     def record_failure(self, exc: Exception) -> None:
@@ -187,6 +191,12 @@ class FileSource(Source):
                 event = self._parse(stripped, key)
                 if event is not None:
                     self.stats.parsed += 1
+                    # Filter here rather than downstream: a non-request never
+                    # needs a feature fold, and on a real nginx stream that is
+                    # a third of every event, multiplied by every use case.
+                    if not event.is_request:
+                        self.stats.skipped_non_request += 1
+                        continue
                     yield event
 
         self._offsets[key] = offset
