@@ -10,6 +10,89 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-08-18 — Ground truth: the 17 August DDoS, measured against the live run
+
+### D-024 · The engine ingested a 6M-request flood and said nothing — by construction, not by defect
+
+**Context.** `bot_detection,web_recon` has been running `--mode live` on elkcc
+since 6 August (11.76 days, 18,392,000 events, 943,153 windows). On 17 August
+04:14 and 04:41 IST, www.iitb.ac.in absorbed two application-layer floods
+totalling **5,955,459 requests**, 99.99% of them `GET /` from ~3,868 addresses,
+each burst about two minutes long (TLSOC SIR-2026-08-17-001). This is the first
+time this framework has been measured against an independently documented
+incident on its own input.
+
+**The engine emitted nothing.** No alert, no digest row, no suppression, in
+either burst window, and not one of the report's attacker addresses appears
+anywhere in its output.
+
+**It did see the traffic.** The feed is the right one — `service.name`
+`nvh_iitb` on `vh3`/`vh4`, top path `/`, Drupal `iitb_bootstrap` assets. And
+the arithmetic closes: the feed's baseline rate is 12.3 events/s (571,993
+events over 12.87 h), so 11.76 days of normal traffic is ~12.5M events against
+the 18.39M the runtime counted. The 5.9M excess is the attack, to within a
+rounding error.
+
+**Why nothing fired — two independent structural exclusions, before any score
+is consulted.**
+
+1. `web_recon.gate` requires `MIN_DISTINCT_PATHS` (3) distinct paths. The flood
+   used **one** path. D-017 chose that floor as the conservative reading of an
+   implicit spec floor; against a single-path flood it is a total exclusion.
+2. `bot_detection.gate` requires `SUSTAINED_WINDOWS` (6) *consecutive*
+   5-minute windows — the spec's "sustained ≥30 min". A two-minute burst
+   produces one window, so the streak can never exceed 1.
+
+Both would otherwise have scored it highly: per attacker the window holds
+~1,228 events, one path, ~94% 4xx (429 *is* a 4xx), no referrer and near-zero
+inter-arrival CV — a browser-declared UA behaving like a machine, which is
+precisely UC-04's spoofing shape.
+
+**The deeper reason, which outlives both constants.** Every gate in the
+framework is **entity-scoped**: it reasons about one `(server, ip, ua_hash)`
+window and nothing about the rest of the server's traffic in that window. A
+flood's defining signal is not any entity's property — it is that 3,868
+entities arrived simultaneously. No entity-scoped gate can express that, so
+loosening either constant would not fix the class; it would only add noise to a
+detector already 100× over its alert budget.
+
+**Decision.** Record the blind spot as a known, tested property rather than
+quietly widening a floor. `tests/test_volumetric_blind_spot.py` pins both
+exclusions with the report's own numbers, so closing the gap has to be a
+deliberate act. Closing it properly needs a **server-scoped** window alongside
+the entity-scoped one, which is an architectural change to
+`WindowFeatureBuilder`, and a use case to consume it — there is no slot for one
+in the UC-01…UC-15 catalog, which covers behavioral analytics and not
+availability. That is a spec extension, deferred here to a decision rather than
+taken unilaterally.
+
+**Rules out.** Lowering `MIN_DISTINCT_PATHS` or `SUSTAINED_WINDOWS` to catch
+floods; treating the miss as a calibration or drift problem; any claim that the
+deployed detectors cover availability attacks.
+
+**Also fixed here, both found by the same investigation.**
+
+- **Live mode wrote no score log at all.** `_handle` called `_shadow_record`
+  only in the non-live branch, so `ScoreResult.record()` — documented as "the
+  always-written audit line" — was written never, and `downweighted_by` was
+  observable nowhere. That is exactly the invisibility D-023 called a defect in
+  itself, reintroduced for every live deployment. Live mode now writes one row
+  per fire to `<slug>_scores.ndjson`, carrying the delivery `disposition`
+  (delivered / folded / digested / suppressed). Separate file from the shadow
+  log deliberately: shadow records every window and live only the fires, so one
+  file would mix two populations — and a stale shadow file would read as
+  current, which is how eleven days of elkcc data was nearly misread.
+- **Records only reached disk at shutdown.** No periodic flush existed, so
+  `SIGHUP`/`SIGKILL` lost whatever sat in a buffer; on elkcc that hid 7 of 76
+  suppressions. Flushing now rides the checkpoint tick, deliberately not later
+  than the checkpoint that claims those events were processed.
+
+**Lives in.** `detection/runtime.py` (`_score_record`, `_flush_outputs`,
+`_deliver` now returns its disposition), `tests/test_volumetric_blind_spot.py`,
+`tests/test_detection_lifecycle.py`, `scripts/verify_36.py`.
+
+---
+
 ## 2026-07-30 — First combined shadow run on production (3.6)
 
 ### D-023 · Politeness is an operator property: scope robots.txt to (server, verified family)

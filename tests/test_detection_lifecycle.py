@@ -218,3 +218,61 @@ def test_runtime_shadow_mode_delivers_nothing(tmp_path: Path) -> None:
     assert rt.stats["alerts_delivered"] == 0, "shadow must not deliver"
     assert not (tmp_path / "alerts").exists()
     assert (tmp_path / "state" / "web_recon_shadow.ndjson").exists(), "but must record"
+
+
+def test_live_mode_records_every_fired_window_with_its_disposition(tmp_path: Path) -> None:
+    """Live must leave an audit line per fire — D-023, and NFR-09.
+
+    Regression: `_handle` used to call the recorder only in the non-live
+    branch, so an eleven-day live deployment wrote no score rows at all and
+    `downweighted_by` was observable nowhere.
+    """
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", _normal_and_scan())
+    cfg = RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                        follow=False, allow_cold_start=True)
+    rt = DetectionRuntime(cfg, log=lambda *_: None)
+    rt.run()
+
+    scores = tmp_path / "state" / "web_recon_scores.ndjson"
+    assert scores.exists(), "live mode must write a score log"
+    rows = [json.loads(line) for line in scores.read_text().splitlines() if line.strip()]
+    assert rows, "at least the scanner fired, so at least one row is expected"
+
+    fired = rt.stats["alerts_delivered"] + rt.stats["alerts_folded"] \
+        + rt.stats["alerts_digested"] + rt.stats["alerts_suppressed"]
+    assert len(rows) == fired, "one row per fire, whatever the delivery outcome"
+    assert all(r["fired"] for r in rows)
+    assert {r["disposition"] for r in rows} <= {
+        "delivered", "folded", "digested", "suppressed"}
+    assert any(r["disposition"] == "delivered" for r in rows)
+    # The shadow log is a different population and must not be conflated.
+    assert not (tmp_path / "state" / "web_recon_shadow.ndjson").exists()
+
+
+def test_records_reach_disk_without_a_clean_shutdown(tmp_path: Path) -> None:
+    """Buffered alerts must not depend on _shutdown running.
+
+    SIGHUP or SIGKILL skips the `finally`, so anything still sitting in a
+    file buffer is lost; on elkcc that hid seven suppressions from the log.
+    """
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", _normal_and_scan())
+    cfg = RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                        follow=False, allow_cold_start=True)
+    rt = DetectionRuntime(cfg, log=lambda *_: None)
+    rt.run()
+
+    # Re-open the handles the way a still-running process holds them, write a
+    # record, and flush without closing — the shutdown path must not be the
+    # only thing that makes a record durable.
+    runner = rt.runners[0]
+    runner.scores_fh = (tmp_path / "state" / "web_recon_scores.ndjson").open(
+        "a", encoding="utf-8")
+    runner.scores_fh.write(json.dumps({"probe": True}) + "\n")
+    rt._flush_outputs()
+    assert '"probe": true' in (
+        tmp_path / "state" / "web_recon_scores.ndjson").read_text()
+    runner.scores_fh.close()
