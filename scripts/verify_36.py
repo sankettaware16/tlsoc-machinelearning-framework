@@ -57,10 +57,27 @@ def mtime(p: Path) -> str:
         return "?"
 
 
+#: Above this, streaming takes long enough that silence reads as a hang.
+_PROGRESS_BYTES = 200 * 1024 * 1024
+_PROGRESS_EVERY = 250_000
+
+
 def stream(path: Path):
-    """Yield parsed JSON objects from an ndjson file, skipping bad lines."""
+    """Yield parsed JSON objects from an ndjson file, skipping bad lines.
+
+    Streamed line by line and never held in memory: on a server that has been
+    running for weeks these files are measured in GB.
+    """
+    noisy = path.stat().st_size > _PROGRESS_BYTES
+    if noisy:
+        print(f"  (streaming {human_size(path.stat().st_size)} — this takes a moment)",
+              flush=True)
+    n = 0
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
+            n += 1
+            if noisy and n % _PROGRESS_EVERY == 0:
+                print(f"    ... {n:,} lines", flush=True)
             line = line.strip()
             if not line:
                 continue
