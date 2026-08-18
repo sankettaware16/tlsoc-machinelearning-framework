@@ -436,22 +436,42 @@ function renderModels(m){
       <div class="sub">serving <span class="mono">${esc(u.serving || "none")}</span></div>
       <div class="wrap"><table>
         <thead><tr><th>Version</th><th>Status</th><th>Trained</th>
-          <th>Windows</th><th></th></tr></thead>
+          <th>Windows</th><th>Models</th><th></th></tr></thead>
         <tbody>${u.versions.map(v => `
           <tr>
-            <td class="mono">${esc(v.version)}</td>
+            <td class="mono">${esc(v.version)}<br>
+              <span style="color:var(--dim)">${esc((v.feature_code_sha256||"").slice(0,12))}</span></td>
             <td><span class="badge ${
               v.status === "approved" ? "b-ok" :
               v.status === "pending"  ? "b-warn" : "b-dim"}">${
               v.status === "approved" ? "approved · serving" :
               v.status === "pending"  ? "pending approval" : "retained"}</span></td>
             <td>${esc((v.trained_at || "").replace("T"," ").slice(0,16) || "–")}</td>
-            <td>${nf(v.train_windows)}</td>
+            <td>${nf(v.train_windows)}<br>
+              <span style="color:var(--dim)">${nf(v.train_events)} ev</span></td>
+            <td class="mono">${esc((v.models||[]).join(", ") || "–")}${
+              (v.models_skipped||[]).length
+                ? `<br><span class="badge b-warn">skipped: ${esc(v.models_skipped.join(", "))}</span>`
+                : ""}</td>
             <td>${v.status === "approved" ? "" :
               `<button class="act" onclick="approve('${esc(u.slug)}','${esc(v.version)}')">
                  Approve</button>`}</td>
           </tr>`).join("")}</tbody>
       </table></div>
+      ${(() => { const p = u.versions.find(v => v.status === "pending");
+        if(!p) return "";
+        const a = u.versions.find(v => v.status === "approved");
+        const drift = a && p.feature_code_sha256 && a.feature_code_sha256
+          && p.feature_code_sha256 !== a.feature_code_sha256;
+        return `<div class="warnbox" style="margin:11px 0 0">
+          <b>${esc(p.version)} is waiting for approval.</b>
+          Trained on ${nf(p.train_events)} events into ${nf(p.train_windows)} windows${
+            p.windows_dropped ? ` (${nf(p.windows_dropped)} dropped by hygiene)` : ""}.
+          ${drift ? "Feature code differs from the serving bundle, so scores are not directly comparable."
+                  : "Same feature code as the serving bundle."}
+          ${p.gate && Object.keys(p.gate).length
+            ? `Gate: <span class="mono">${esc(JSON.stringify(p.gate))}</span>.` : ""}
+        </div>`; })()}
       <div class="row" style="margin-top:11px">
         <button class="act ghost" ${u.can_rollback ? "" : "disabled"}
           onclick="rollback('${esc(u.slug)}')">Roll back to previous</button>

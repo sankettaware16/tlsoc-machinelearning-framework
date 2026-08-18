@@ -303,11 +303,24 @@ class DashboardState:
                 versions.append({
                     "version": version,
                     "status": status,
-                    "trained_at": meta.get("trained_at"),
+                    # Bundle metadata keys, as written by ModelBundle.save.
+                    "trained_at": meta.get("created_at"),
                     "train_windows": meta.get("train_windows"),
-                    "feature_sha256": meta.get("feature_sha256"),
-                    "models": list((meta.get("models") or {}).keys()) or meta.get("models"),
-                    "source": meta.get("source_desc") or meta.get("source"),
+                    "train_events": meta.get("train_events"),
+                    "windows_dropped": (meta.get("hygiene") or {}).get("windows_dropped"),
+                    # The reproducibility anchor (D-017): two bundles with
+                    # different feature code are not comparable, whatever
+                    # their scores say.
+                    "feature_code_sha256": meta.get("feature_code_sha256"),
+                    "models": sorted((meta.get("models") or {}).keys()),
+                    "models_skipped": meta.get("models_skipped") or [],
+                    # Gate constants travel with the bundle, so the console can
+                    # show what a version actually enforces rather than what
+                    # the current source happens to say.
+                    "gate": meta.get("gate") or {},
+                    "source": meta.get("source"),
+                    "rule_id": meta.get("rule_id"),
+                    "tier": meta.get("tier"),
                 })
             out.append({
                 "slug": slug,
