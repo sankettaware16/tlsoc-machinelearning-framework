@@ -126,7 +126,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     <h2>Live ingestion</h2>
     <div class="card">
       <div class="row" style="justify-content:space-between">
-        <div class="sub" style="margin:0">Measured rate between samples, 5s apart — not the lifetime average.</div>
+        <div class="sub" style="margin:0">Measured between 5s samples, smoothed over 30s.
+          The header shows the runtime's lifetime average, so the two differ.</div>
         <div class="mono" style="color:var(--dim)" id="chartMeta"></div>
       </div>
       <div id="chart" style="margin-top:10px"></div>
@@ -262,7 +263,14 @@ function renderChart(ts){
     return;
   }
   const W = 1000, H = 130, pad = 4;
-  const vals = s.map(x => x.eps);
+  // The reader tails its input in bursts, so raw 5s deltas alternate between a
+  // spike and zero — true, but unreadable, and it disagrees with the header's
+  // lifetime average for no useful reason. Smooth over ~30s.
+  const raw = s.map(x => x.eps), k = 6;
+  const vals = raw.map((_, i) => {
+    const from = Math.max(0, i - k + 1), win = raw.slice(from, i + 1);
+    return win.reduce((a, b) => a + b, 0) / win.length;
+  });
   const max = Math.max(...vals, 1) * 1.15;
   const pts = vals.map((v,i) => {
     const x = pad + i * (W - 2*pad) / (vals.length - 1);
@@ -284,7 +292,7 @@ function renderChart(ts){
            stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
    </svg>`;
   $("chartMeta").textContent =
-    `now ${vals[vals.length-1].toFixed(1)}/s · peak ${Math.max(...vals).toFixed(1)}/s · ` +
+    `now ${vals[vals.length-1].toFixed(1)}/s · peak ${Math.max(...raw).toFixed(1)}/s · ` +
     `last ${dur(span)}`;
 }
 
@@ -440,7 +448,11 @@ function renderModels(m){
         <tbody>${u.versions.map(v => `
           <tr>
             <td class="mono">${esc(v.version)}<br>
-              <span style="color:var(--dim)">${esc((v.feature_code_sha256||"").slice(0,12))}</span></td>
+              <span style="color:${v.feature_code_current === false ? "var(--bad)" : "var(--dim)"}"
+                    title="${v.feature_code_current === false
+                      ? "Feature code differs from the running build" : "feature code hash"}"
+                >${esc((v.feature_code_sha256||"").slice(0,12))}${
+                  v.feature_code_current === false ? " ⚠" : ""}</span></td>
             <td><span class="badge ${
               v.status === "approved" ? "b-ok" :
               v.status === "pending"  ? "b-warn" : "b-dim"}">${
@@ -454,8 +466,12 @@ function renderModels(m){
                 ? `<br><span class="badge b-warn">skipped: ${esc(v.models_skipped.join(", "))}</span>`
                 : ""}</td>
             <td>${v.status === "approved" ? "" :
-              `<button class="act" onclick="approve('${esc(u.slug)}','${esc(v.version)}')">
-                 Approve</button>`}</td>
+              v.feature_code_current === false
+                ? `<button class="act ghost"
+                     onclick="approveStale('${esc(u.slug)}','${esc(v.version)}')"
+                     title="Built from different feature code">Approve ⚠</button>`
+                : `<button class="act" onclick="approve('${esc(u.slug)}','${esc(v.version)}')">
+                     Approve</button>`}</td>
           </tr>`).join("")}</tbody>
       </table></div>
       ${(() => { const p = u.versions.find(v => v.status === "pending");
@@ -491,8 +507,18 @@ async function ensureToken(){
   return true;
 }
 
-async function approve(slug, version){
-  if(!confirm(`Approve ${version} for ${slug}?\n\nThis repoints the serving pointer. `
+async function approveStale(slug, version){
+  if(!confirm(
+    `${version} was built from DIFFERENT feature code than this build is running.\n\n`
+    + `Nothing verifies the feature-code hash when a bundle is loaded, so serving it `
+    + `scores current features through a model fitted on a different feature set — `
+    + `wrong scores rather than an error.\n\n`
+    + `Only continue if you are also rolling the code back to match.\n\nApprove anyway?`)) return;
+  return approve(slug, version, true);
+}
+
+async function approve(slug, version, forced){
+  if(!forced && !confirm(`Approve ${version} for ${slug}?\n\nThis repoints the serving pointer. `
     + `The running detector keeps its loaded model until restarted.`)) return;
   if(!await ensureToken()) return;
   try{

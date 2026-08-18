@@ -129,6 +129,41 @@ def test_version_provenance_is_read_from_real_metadata_keys(tmp_path: Path) -> N
     assert v["gate"]["min_distinct_paths"] == 3
 
 
+def test_versions_are_flagged_when_their_feature_code_is_not_current(
+        tmp_path: Path) -> None:
+    """Nothing verifies the feature-code hash at load, so the console must.
+
+    A bundle fitted against different feature code scores current features
+    through a model built for a different feature set — wrong numbers rather
+    than an error, which is the worst failure mode available.
+    """
+    root = _deployment(tmp_path)
+    stale = root / "models" / "web_recon" / "v20260101T000000" / "metadata.json"
+    meta = json.loads(stale.read_text())
+    meta["feature_code_sha256"] = "0000000000000000deadbeef"
+    stale.write_text(json.dumps(meta))
+
+    st = DashboardState(root)
+    by_version = {v["version"]: v for v in st.models()["usecases"][0]["versions"]}
+    assert by_version["v20260101T000000"]["feature_code_current"] is False
+    # The fixture's other bundles carry a hash that is not this build's either,
+    # so they must be flagged too rather than silently passing.
+    assert by_version["v20260818T090000"]["feature_code_current"] is False
+
+
+def test_unknown_feature_code_is_not_reported_as_matching(tmp_path: Path) -> None:
+    """"We cannot tell" must stay distinct from "it matches" (NFR-09)."""
+    root = _deployment(tmp_path)
+    path = root / "models" / "web_recon" / "v20260101T000000" / "metadata.json"
+    meta = json.loads(path.read_text())
+    del meta["feature_code_sha256"]
+    path.write_text(json.dumps(meta))
+
+    st = DashboardState(root)
+    by_version = {v["version"]: v for v in st.models()["usecases"][0]["versions"]}
+    assert by_version["v20260101T000000"]["feature_code_current"] is None
+
+
 def test_promote_moves_the_serving_pointer(tmp_path: Path) -> None:
     st = DashboardState(_deployment(tmp_path))
     assert st.promote("web_recon", "v20260818T090000")["promoted"] == "v20260818T090000"

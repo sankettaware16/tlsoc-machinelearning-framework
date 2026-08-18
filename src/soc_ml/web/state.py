@@ -285,8 +285,25 @@ class DashboardState:
     def models(self) -> dict[str, Any]:
         return self._cached("models", self._models)
 
+    @staticmethod
+    def _current_feature_code() -> str | None:
+        """Hash of the feature code this process would score with.
+
+        A bundle carries the hash of the feature code it was *fitted* against
+        (D-017). Nothing verifies it at load, so promoting a bundle built from
+        different feature code silently scores it with mismatched inputs — the
+        console at least has to show which versions those are.
+        """
+        try:
+            from soc_ml.training.trainer import _feature_code_sha256
+
+            return _feature_code_sha256()
+        except Exception:
+            return None
+
     def _models(self) -> dict[str, Any]:
         out = []
+        running_hash = self._current_feature_code()
         for slug in self.deployed_slugs():
             current = self.registry.current_version(slug)
             candidate = self.registry.candidate_version(slug)
@@ -312,6 +329,12 @@ class DashboardState:
                     # different feature code are not comparable, whatever
                     # their scores say.
                     "feature_code_sha256": meta.get("feature_code_sha256"),
+                    # None when either side is unknown — "we cannot tell" must
+                    # stay distinguishable from "it matches" (NFR-09).
+                    "feature_code_current": (
+                        None if not (running_hash and meta.get("feature_code_sha256"))
+                        else meta["feature_code_sha256"] == running_hash
+                    ),
                     "models": sorted((meta.get("models") or {}).keys()),
                     "models_skipped": meta.get("models_skipped") or [],
                     # Gate constants travel with the bundle, so the console can
@@ -326,6 +349,7 @@ class DashboardState:
                 "slug": slug,
                 "serving": current,
                 "candidate": candidate,
+                "running_feature_code": running_hash,
                 "can_rollback": len([v for v in self.registry.versions(slug)
                                      if v != current]) > 0,
                 "versions": versions,
