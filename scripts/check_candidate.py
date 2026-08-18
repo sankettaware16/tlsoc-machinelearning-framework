@@ -83,14 +83,24 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
     for event in merged:
         for result in builder.add(event):
             handle(result)
+
+    # Everything above closed because a later event arrived — the same way
+    # windows close in the live runtime. The final flush is different: it
+    # closes every still-open window at once, including the one-request tail
+    # that live scoring would never have counted yet. Counting those inflates
+    # the denominator and reports a fire rate several times lower than the
+    # deployment actually runs at, which is exactly the wrong direction for a
+    # go/no-go check.
+    natural_windows, natural_fired = windows, fired
     for result in builder.flush():
         handle(result)
 
     top.sort(reverse=True)
     return {
-        "windows": windows,
-        "fired": fired,
-        "rate_pct": (100.0 * fired / windows) if windows else 0.0,
+        "windows": natural_windows,
+        "fired": natural_fired,
+        "rate_pct": (100.0 * natural_fired / natural_windows) if natural_windows else 0.0,
+        "flushed_windows": windows - natural_windows,
         "canary_windows": canary_windows,
         "canary_fired": canary_fired,
         "top": top[:5],
@@ -149,6 +159,9 @@ def main() -> int:
     if design is not None:
         print(f"\ndesign fire rate for this gate: {design}% of windows "
               f"(p{gate * 100:g} percentile)")
+    print(f"windows counted: closed by a later event, as in the live runtime. "
+          f"{results['serving'].get('flushed_windows', 0):,} still-open windows "
+          f"were flushed at the end and excluded.")
 
     s, c = results["serving"], results["candidate"]
     print("\nverdict")
