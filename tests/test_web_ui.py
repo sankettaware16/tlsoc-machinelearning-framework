@@ -18,9 +18,6 @@ import pytest
 from soc_ml.web.server import build_server, serve_in_thread
 from soc_ml.web.state import DashboardState
 
-NOW = datetime.now(timezone.utc)
-
-
 # ------------------------------- fixtures ------------------------------- #
 
 
@@ -31,7 +28,9 @@ def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True
     state.mkdir(parents=True, exist_ok=True)
     alerts.mkdir(parents=True, exist_ok=True)
 
-    stamp = (NOW - timedelta(seconds=health_age_s)).isoformat()
+    # Health age must be relative to *this call*, not module import: on a
+    # loaded machine the suite can take longer than the 60s liveness window.
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=health_age_s)).isoformat()
     (state / "web_recon_health.json").write_text(json.dumps({
         "timestamp": stamp, "usecase": "web_recon", "mode": "live",
         "bundle_version": "v20260806T124821", "uptime_s": 90000.0, "eps": 12.3,
