@@ -23,6 +23,14 @@ bundles, scores in memory, and writes nothing.
 
 from __future__ import annotations
 
+import os
+
+# Same tiny-matrix workload as the CLI, same pin (JOURNAL.md D-026) — this
+# script bypasses cli/main.py, so it must set the defaults itself, before
+# numpy/sklearn load.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import argparse
 import builtins
 import functools
