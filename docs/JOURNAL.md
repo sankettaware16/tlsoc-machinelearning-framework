@@ -10,6 +10,45 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-07 — Reviving the elkcc deployment after 46 days down
+
+### D-026 · Pin BLAS/OpenMP pools to one thread in the CLI entry point
+
+**Context.** The live runtime died 2026-08-22 00:39 (SIGKILL mid-checkpoint;
+launched via `nohup`, so nothing restarted it) and sat dead for 46 days. The
+revival validation pass re-ran both backtests on current traffic. `web_recon`
+passed in 14 minutes; `bot_detection` burned **10+ CPU-hours without
+finishing** on the same 300k events — on a 4-core host whose background load
+(Elasticsearch, Logstash) had risen to ~20.
+
+**Diagnosis, measured.** The same backtest on the same 300k-event slice,
+locally: 12m19s CPU with default thread pools, **78s CPU with
+`OPENBLAS_NUM_THREADS=1`** — a 9.5× inflation from threading alone, with
+identical results (PASS, canary detected). Profile: 98 of 152 seconds inside
+`CalibratedClassifierCV.predict_proba`, called once per window on a single
+15-feature row (22,483 windows, 254M Python calls). Every such call wakes the
+BLAS pool for matrix work measured in microseconds; the pool's spin-wait
+synchronization costs more than the math, and on a box where the cores are
+already saturated the spinning multiplies to ~50×. The framework's workload
+shape — one tiny row at a time, forever (FR-72 makes live and backtest share
+it) — is the pathological case for thread pools.
+
+**Decision.** `cli/main.py` sets `OPENBLAS_NUM_THREADS` / `OMP_NUM_THREADS` /
+`MKL_NUM_THREADS` to 1 via `setdefault` before numpy can load, so an operator
+export still wins. The systemd unit repeats it (`deploy/foss-soc-ml.service`)
+for anything that bypasses the CLI. Not done per-call with `threadpoolctl`:
+the pools are process-global, every soc-ml workload is small-matrix, and a
+scoped limiter would leave training — GMM BIC selection is the same tiny-GEMM
+shape — unprotected.
+
+**Rules out.** Trusting library threading defaults on shared hosts; reading
+high `%CPU` as progress (10 CPU-hours here bought less than 78 CPU-seconds of
+work); sizing this detector's cost from a contended-box measurement.
+
+**Lives in.** `cli/main.py` (env pins), `deploy/foss-soc-ml.service`.
+
+---
+
 ## 2026-08-18 — Every production alert was an artifact of the error channel
 
 ### D-025 · A web log is not all requests: nginx's error stream was being scored as traffic

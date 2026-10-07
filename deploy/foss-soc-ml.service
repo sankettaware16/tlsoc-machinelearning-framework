@@ -19,6 +19,9 @@ ExecStart=/opt/foss-soc-ml/.venv/bin/soc-ml run \
     --mode live
 # Unbuffered so health/first-run logs reach journalctl immediately.
 Environment=PYTHONUNBUFFERED=1
+# Per-window scoring is tiny-matrix work; thread pools only add spin-wait
+# on a shared host (see JOURNAL.md D-026). The CLI defaults these too.
+Environment=OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 Restart=on-failure
 RestartSec=5
 # Clean drain on stop/restart: SIGTERM -> flush windows, checkpoint, exit.

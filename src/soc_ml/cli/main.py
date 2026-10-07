@@ -8,6 +8,17 @@ clear "not implemented yet, see ROADMAP" rather than a stack trace.
 
 from __future__ import annotations
 
+import os
+
+# Scoring is one 15-feature row per window; BLAS/OpenMP pools give those tiny
+# matrix ops no speedup, and on a contended host their spin-wait synchronization
+# multiplies CPU ~10-50x (measured: a 300k-event bot_detection backtest cost
+# 78s single-threaded vs 12+ CPU-minutes pooled, and 10+ CPU-hours on a loaded
+# 4-core box). Must be set before numpy/sklearn load; an explicit operator
+# setting still wins.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import argparse
 import json
 import sys
