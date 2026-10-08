@@ -11,8 +11,11 @@ Three correctness details that matter more than they look:
   A line without a trailing newline is left unread and the offset is not
   advanced, so the next poll picks it up whole. Without this, tailing a live file
   silently corrupts roughly one event per flush.
-* **Truncation and rotation are detected** by comparing file size against the
-  stored offset. A rotated file restarts at 0 rather than being skipped forever.
+* **Truncation and rotation are detected** by the file's inode as well as its
+  size. A rotated file restarts at 0 rather than being skipped forever. Size
+  alone misses a rotation that happened while the runtime was down: the new
+  file can outgrow the old offset, and resuming would seek into the middle of
+  a different file.
 * **Unparseable lines are dead-lettered, never dropped** (NFR-09). A source that
   quietly discards malformed input is indistinguishable from one that is working.
 """
@@ -108,6 +111,7 @@ class FileSource(Source):
         self.start_at_end = start_at_end and follow
 
         self._offsets: dict[str, int] = {}
+        self._inodes: dict[str, int] = {}
         self._dlq_fh: Any = None
         self.stats = IngestStats()
         self._stopped = False
@@ -147,16 +151,23 @@ class FileSource(Source):
     def _read_file(self, path: Path, *, first_pass: bool) -> Iterator[Event]:
         key = self._key(path)
         try:
-            size = path.stat().st_size
+            st = path.stat()
         except OSError as exc:  # disappeared between glob and stat
             log.debug("cannot stat %s: %s", path, exc)
             return
+        size, inode = st.st_size, st.st_ino
 
         offset = self._offsets.get(key)
+        known_inode = self._inodes.get(key)
+        self._inodes[key] = inode
         if offset is None:
             # A live tail with no checkpoint may skip the backlog; an offline
             # read never does, or a backtest would silently see nothing.
             offset = size if (self.start_at_end and first_pass) else 0
+        elif known_inode is not None and known_inode != inode:
+            log.info("file %s was replaced (inode %d -> %d); restarting from 0",
+                     key, known_inode, inode)
+            offset = 0
         elif size < offset:
             # Truncated or rotated in place — start over rather than never
             # reading this file again.
@@ -229,16 +240,22 @@ class FileSource(Source):
     # -- checkpoint / replay ----------------------------------------------- #
 
     def checkpoint(self) -> dict[str, Any]:
-        """Restart-safe position: byte offset per file."""
-        return {"offsets": dict(self._offsets)}
+        """Restart-safe position: byte offset and inode per file."""
+        return {"offsets": dict(self._offsets), "inodes": dict(self._inodes)}
 
     def seek(self, checkpoint: dict[str, Any]) -> None:
-        """Resume from a checkpoint. ``{}`` rewinds to the beginning (replay)."""
+        """Resume from a checkpoint. ``{}`` rewinds to the beginning (replay).
+
+        A checkpoint written before inodes were recorded resumes on size
+        checks alone.
+        """
         self._offsets = dict(checkpoint.get("offsets") or {})
+        self._inodes = dict(checkpoint.get("inodes") or {})
 
     def rewind(self) -> None:
         """Replay everything from the start (FR-04)."""
         self._offsets.clear()
+        self._inodes.clear()
 
     def stop(self) -> None:
         """Ask a following reader to finish after the current pass."""
