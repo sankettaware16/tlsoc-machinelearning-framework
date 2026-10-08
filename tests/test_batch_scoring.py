@@ -74,7 +74,7 @@ def test_score_many_matches_scoring_one_window_at_a_time() -> None:
 
     assert len(batched) == len(one_by_one)
     assert any(o is not None and o.fired for o in batched), "the scan must fire"
-    for single, many in zip(one_by_one, batched):
+    for single, many in zip(one_by_one, batched, strict=True):
         if single is None:
             assert many is None
             continue

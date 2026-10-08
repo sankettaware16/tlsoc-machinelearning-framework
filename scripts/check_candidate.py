@@ -75,7 +75,8 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
     def handle(results: list) -> None:
         nonlocal windows, fired, canary_windows, canary_fired
         flags = [is_canary_ip(r.vector.entity.ip) for r in results]
-        for outcome, synthetic in zip(scorer.score_many(results, synthetic=flags), flags):
+        outcomes = scorer.score_many(results, synthetic=flags)
+        for outcome, synthetic in zip(outcomes, flags, strict=True):
             if outcome is None:
                 continue
             windows += 1

@@ -146,7 +146,8 @@ def run_backtest(
     def handle_batch(results: list) -> None:
         # Same batched path the live runtime uses (FR-72).
         flags = [is_canary_ip(r.vector.entity.ip) for r in results]
-        for outcome, is_canary in zip(scorer.score_many(results, synthetic=flags), flags):
+        outcomes = scorer.score_many(results, synthetic=flags)
+        for outcome, is_canary in zip(outcomes, flags, strict=True):
             handle(outcome, is_canary)
 
     def handle(outcome, is_canary: bool) -> None:

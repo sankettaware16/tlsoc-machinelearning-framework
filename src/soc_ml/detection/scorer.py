@@ -131,7 +131,7 @@ class Scorer:
 
         outputs: list[ScoreResult | None] = []
         row_i = 0
-        for result, x, is_synthetic in zip(results, vectors, flags):
+        for result, x, is_synthetic in zip(results, vectors, flags, strict=True):
             if x is None:
                 outputs.append(None)
                 continue
