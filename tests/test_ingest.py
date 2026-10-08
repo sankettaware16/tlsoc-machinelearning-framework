@@ -121,6 +121,40 @@ def test_truncation_restarts_the_file(tmp_path: Path) -> None:
     assert [e.url_path for e in src.read()] == ["/new"]
 
 
+def test_rotation_while_down_is_detected_even_when_the_new_file_is_larger(
+    tmp_path: Path,
+) -> None:
+    """elkcc, Oct 2026: down for weeks across rotations; today's file had
+    outgrown the saved offset, so a size check alone would seek mid-file."""
+    path = tmp_path / "a.json"
+    write(tmp_path, "a.json", [ecs(path="/old")])
+    src = FileSource(tmp_path)
+    list(src.read())
+    ckpt = json.loads(json.dumps(src.checkpoint()))  # through disk, as the runtime does
+
+    path.rename(tmp_path / "a.json.1")  # rotated away; the glob no longer sees it
+    write(tmp_path, "a.json", [ecs(path=f"/new{i}") for i in range(5)])
+    assert path.stat().st_size > ckpt["offsets"]["a.json"]
+
+    resumed = FileSource(tmp_path)
+    resumed.seek(ckpt)
+    assert [e.url_path for e in resumed.read()] == [f"/new{i}" for i in range(5)]
+
+
+def test_checkpoint_without_inodes_still_resumes(tmp_path: Path) -> None:
+    """Checkpoints written before inodes were recorded must keep working."""
+    write(tmp_path, "a.json", [ecs(path="/one"), ecs(path="/two")])
+    src = FileSource(tmp_path)
+    list(src.read())
+    legacy = {"offsets": src.checkpoint()["offsets"]}
+
+    with (tmp_path / "a.json").open("a", encoding="utf-8") as fh:
+        fh.write(ecs(path="/three") + "\n")
+    resumed = FileSource(tmp_path)
+    resumed.seek(legacy)
+    assert [e.url_path for e in resumed.read()] == ["/three"]
+
+
 def test_malformed_lines_are_dead_lettered_not_dropped(tmp_path: Path) -> None:
     """Silent discard is indistinguishable from working (NFR-09)."""
     dlq = tmp_path / "dlq" / "bad.json"
