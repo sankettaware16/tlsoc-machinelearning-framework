@@ -219,7 +219,7 @@ class DetectionRuntime:
             for runner in self.runners:
                 self._open_sink(runner)
 
-        last_ckpt = last_health = last_drift = time.monotonic()
+        self._last_ckpt = self._last_health = self._last_drift = time.monotonic()
         try:
             for event in source.read():
                 if self._stop:
@@ -229,26 +229,35 @@ class DetectionRuntime:
                 # immediately per runner, so an exporter's window for a bucket
                 # is scored before any consumer's window for that same bucket.
                 for runner in self.runners:
-                    for result in runner.builder.add(event):
-                        self._handle(runner, result)
-
-                now = time.monotonic()
-                if now - last_ckpt >= self.cfg.checkpoint_every_s:
-                    self._save_checkpoint(source)
-                    # Flush on the same tick: a checkpoint that outruns the
-                    # records it refers to would, after an unclean kill, claim
-                    # events were processed whose alerts never reached disk.
-                    self._flush_outputs()
-                    last_ckpt = now
-                if now - last_health >= self.cfg.health_every_s:
-                    self._write_health(source)
-                    last_health = now
-                if now - last_drift >= self.cfg.drift_every_s:
-                    self._check_drift()
-                    last_drift = now
+                    closed = list(runner.builder.add(event))
+                    if closed:
+                        self._handle_many(runner, closed, source)
+                self._tick(source)
         finally:
             self._shutdown(source)
         return 0
+
+    def _tick(self, source: FileSource) -> None:
+        """Run whichever periodic duties are due.
+
+        Called per event and per handled window: a bucket's windows all close
+        at once, and the minutes spent scoring them must still produce health
+        and checkpoints — a runtime that is busy must not look dead.
+        """
+        now = time.monotonic()
+        if now - self._last_ckpt >= self.cfg.checkpoint_every_s:
+            self._save_checkpoint(source)
+            # Flush on the same tick: a checkpoint that outruns the records it
+            # refers to would, after an unclean kill, claim events were
+            # processed whose alerts never reached disk.
+            self._flush_outputs()
+            self._last_ckpt = now
+        if now - self._last_health >= self.cfg.health_every_s:
+            self._write_health(source)
+            self._last_health = now
+        if now - self._last_drift >= self.cfg.drift_every_s:
+            self._check_drift()
+            self._last_drift = now
 
     # ------------------------------------------------------------------ #
     # Model loading / cold start
@@ -324,24 +333,31 @@ class DetectionRuntime:
     # Per-window handling
     # ------------------------------------------------------------------ #
 
-    def _handle(self, runner: _UseCaseRunner, result) -> None:
-        outcome = runner.scorer.score(result)
-        if outcome is None:
-            return
-        runner.stats["windows"] += 1
-        self.stats["windows"] += 1
-        self._collect_drift(runner, outcome)
+    def _handle_many(self, runner: _UseCaseRunner, results, source: FileSource) -> None:
+        """Score one runner's batch of closed windows and apply delivery to each.
 
-        if self.cfg.mode == "live":
-            if outcome.fired and outcome.alert is not None:
-                # The delivery decision is recorded even when it removes the
-                # alert. D-023: a delivery modification that cannot be measured
-                # from the score log is a defect in itself, and `downweighted_by`
-                # lives nowhere else once an alert is folded or digested.
-                self._score_record(runner, outcome, self._deliver(runner, outcome))
-        else:
-            # observe / shadow: record everything, deliver nothing.
-            self._shadow_record(runner, outcome)
+        Delivery runs in window order so dedup cooldowns and the daily budget
+        see the same sequence they would have one window at a time.
+        """
+        for outcome in runner.scorer.score_many(results):
+            if outcome is None:
+                continue
+            runner.stats["windows"] += 1
+            self.stats["windows"] += 1
+            self._collect_drift(runner, outcome)
+
+            if self.cfg.mode == "live":
+                if outcome.fired and outcome.alert is not None:
+                    # The delivery decision is recorded even when it removes
+                    # the alert. D-023: a delivery modification that cannot be
+                    # measured from the score log is a defect in itself, and
+                    # `downweighted_by` lives nowhere else once an alert is
+                    # folded or digested.
+                    self._score_record(runner, outcome, self._deliver(runner, outcome))
+            else:
+                # observe / shadow: record everything, deliver nothing.
+                self._shadow_record(runner, outcome)
+            self._tick(source)
 
     def _deliver(self, runner: _UseCaseRunner, outcome) -> str:
         """Apply the delivery pipeline; returns the disposition for the record."""
@@ -562,8 +578,9 @@ class DetectionRuntime:
         # Drain in dependency order for the same reason the loop scores in it.
         for runner in self.runners:
             if runner.builder:
-                for result in runner.builder.flush():
-                    self._handle(runner, result)
+                remaining = list(runner.builder.flush())
+                if remaining:
+                    self._handle_many(runner, remaining, source)
         self._save_checkpoint(source)
         self._write_health(source)
         for runner in self.runners:

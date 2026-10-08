@@ -72,25 +72,26 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
     windows = fired = canary_windows = canary_fired = 0
     top: list[tuple[float, str, int]] = []
 
-    def handle(result) -> None:
+    def handle(results: list) -> None:
         nonlocal windows, fired, canary_windows, canary_fired
-        synthetic = is_canary_ip(result.vector.entity.ip)
-        outcome = scorer.score(result, synthetic=synthetic)
-        if outcome is None:
-            return
-        windows += 1
-        canary_windows += int(synthetic)
-        if outcome.fired:
-            fired += 1
-            canary_fired += int(synthetic)
-            if not synthetic:
-                top.append((outcome.fused_percentile, str(outcome.entity),
-                            outcome.evidence.get("event_count", 0)))
+        flags = [is_canary_ip(r.vector.entity.ip) for r in results]
+        for outcome, synthetic in zip(scorer.score_many(results, synthetic=flags), flags):
+            if outcome is None:
+                continue
+            windows += 1
+            canary_windows += int(synthetic)
+            if outcome.fired:
+                fired += 1
+                canary_fired += int(synthetic)
+                if not synthetic:
+                    top.append((outcome.fused_percentile, str(outcome.entity),
+                                outcome.evidence.get("event_count", 0)))
 
     merged = sorted(list(stream) + list(canary_events), key=lambda e: e.timestamp)
     for event in merged:
-        for result in builder.add(event):
-            handle(result)
+        closed = list(builder.add(event))
+        if closed:
+            handle(closed)
 
     # Everything above closed because a later event arrived — the same way
     # windows close in the live runtime. The final flush is different: it
@@ -100,8 +101,7 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
     # deployment actually runs at, which is exactly the wrong direction for a
     # go/no-go check.
     natural_windows, natural_fired = windows, fired
-    for result in builder.flush():
-        handle(result)
+    handle(list(builder.flush()))
 
     top.sort(reverse=True)
     return {

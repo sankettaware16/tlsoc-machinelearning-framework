@@ -143,11 +143,15 @@ def run_backtest(
     canary_windows = canary_fired = 0
     top_alerts: list[tuple[float, dict[str, Any]]] = []
 
-    def handle(result) -> None:
+    def handle_batch(results: list) -> None:
+        # Same batched path the live runtime uses (FR-72).
+        flags = [is_canary_ip(r.vector.entity.ip) for r in results]
+        for outcome, is_canary in zip(scorer.score_many(results, synthetic=flags), flags):
+            handle(outcome, is_canary)
+
+    def handle(outcome, is_canary: bool) -> None:
         nonlocal scored, alerts_delivered, alerts_raw, alerts_suppressed
         nonlocal canary_windows, canary_fired
-        is_canary = is_canary_ip(result.vector.entity.ip)
-        outcome = scorer.score(result, synthetic=is_canary)
         if outcome is None:
             return
         scored += 1
@@ -175,10 +179,10 @@ def run_backtest(
 
     scoring = (e for e in _events(input_path, limit) if e.timestamp >= cutoff)
     for event in _merge_by_time(scoring, canary):
-        for result in builder.add(event):
-            handle(result)
-    for result in builder.flush():
-        handle(result)
+        closed = list(builder.add(event))
+        if closed:
+            handle_batch(closed)
+    handle_batch(list(builder.flush()))
 
     alert_sink.flush()
     alert_sink.close()

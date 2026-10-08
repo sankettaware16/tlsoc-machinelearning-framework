@@ -10,6 +10,46 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-08 — The console said STOPPED every four minutes; the runtime was scoring
+
+### D-028 · Score a closed bucket as one batch, and tick health per window
+
+**Context.** Six hours after the revival the console showed STOPPED ("nothing
+scored for 2m 25s") while the process was alive, in state R, on a full core,
+with the input file growing and the event counter frozen. Sampling the health
+file every 5 s showed the shape: ~90 s of events flowing, then a 2-3 minute
+stall, then the `windows` counter jumping by ~2,500 — one 5-minute bucket's
+worth of entities (3,000-3,700 open windows on the post-upgrade feed) closing
+on a single watermark sweep and being scored **one row at a time at ~78 ms
+each**. Health is written from the event loop, so none was written for the
+duration; the dashboard's 60 s liveness window called it dead. Lag reset to
+near zero after each burst, so the runtime was keeping up — at a ~60% duty
+cycle, one traffic increase away from falling behind for good.
+
+**Decision.** `Scorer.score_many()` scores a batch: each model is asked once
+via its existing `score_batch` (the training path already relied on these);
+calibration, fusion, the gate, alert building, suppression and annotation
+still run **per window in input order**, so streak-keeping gates and
+annotations read by a later window of the same entity behave exactly as
+before. `score()` is now `score_many([w])[0]` — one code path for live,
+backtest and `check_candidate` (FR-72), and `tests/test_batch_scoring.py`
+pins outcome-for-outcome equality against the per-window path. The runtime's
+periodic duties moved into `_tick()`, called per event *and* per handled
+window, so a long batch still writes health and checkpoints.
+
+**Measured.** Same 300k-event bot_detection backtest, same results: 82 s →
+25 s locally. Full test suite: 54 s → 22 s.
+
+**Rejected.** A health-writer thread (hides the stall rather than removing
+it, and shares mutable stats across threads for no gain); widening the
+dashboard's liveness window (a 3-minute blind spot is not liveness).
+
+**Lives in.** `detection/scorer.py` (`score_many`), `detection/runtime.py`
+(`_handle_many`, `_tick`), `evaluation/backtest.py`,
+`scripts/check_candidate.py`, `tests/test_batch_scoring.py`.
+
+---
+
 ## 2026-10-08 — Revived on elkcc; the first window caught a UA-rotating scanner
 
 ### D-027 · Inode-tracked checkpoints, a cron watchdog, and two weaknesses the first live catch exposed

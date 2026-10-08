@@ -15,6 +15,7 @@ that will serve production traffic (FR-72).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,47 +98,82 @@ class Scorer:
 
     def score(self, result: WindowResult, *, synthetic: bool = False) -> ScoreResult | None:
         """Score one window. Returns None when the window is not applicable."""
-        x = self.usecase.vector(result.vector)
-        if x is None:
-            return None
+        return self.score_many([result], synthetic=[synthetic])[0]
 
-        entity_str = str(result.vector.entity)
-        if self.annotations is not None:
-            # What upstream use cases currently know about this entity (None
-            # is meaningful: "no signal" must stay distinguishable, NFR-09).
-            result.evidence["entity_annotations"] = self.annotations.get(entity_str)
+    def score_many(
+        self,
+        results: Sequence[WindowResult],
+        *,
+        synthetic: Sequence[bool] | None = None,
+    ) -> list[ScoreResult | None]:
+        """Score a batch of windows; one output per input, in order.
 
-        per_model_raw = {
-            mslug: model.score(x) for mslug, model in self.bundle.models.items()
+        The windows of a bucket all close on the same watermark sweep, and
+        scoring them one row at a time is almost entirely sklearn per-call
+        overhead: on elkcc a 3,500-window bucket cost 3+ minutes, during which
+        no event was read and no health written. The models are asked once
+        per batch; everything stateful — gate streaks, annotations read by a
+        later window of the same entity, suppression — still runs per window
+        in input order, so the outcome of each window is the same as
+        :meth:`score` would give it.
+        """
+        flags = list(synthetic) if synthetic is not None else [False] * len(results)
+        if len(flags) != len(results):
+            raise ValueError("synthetic must have one flag per result")
+
+        vectors: list[dict[str, float] | None] = [
+            self.usecase.vector(r.vector) for r in results
+        ]
+        rows = [x for x in vectors if x is not None]
+        raw_by_model = {
+            mslug: model.score_batch(rows) for mslug, model in self.bundle.models.items()
         }
-        per_model = {
-            mslug: self.bundle.calibrators[mslug].percentile(raw)
-            for mslug, raw in per_model_raw.items()
-        }
-        fused = self.usecase.fuse(per_model)
-        fired = self.usecase.gate(fused, result.evidence)
 
-        out = ScoreResult(
-            entity=result.vector.entity,
-            window_end=result.vector.computed_at.isoformat(),
-            fused_percentile=fused,
-            per_model=per_model,
-            fired=fired,
-            evidence=result.evidence,
-            features=x,
-            per_model_raw=per_model_raw,
-        )
-        if fired:
-            out.alert = self._build_alert(x, result, per_model, fused, synthetic)
-            self._apply_suppression(out)
+        outputs: list[ScoreResult | None] = []
+        row_i = 0
+        for result, x, is_synthetic in zip(results, vectors, flags):
+            if x is None:
+                outputs.append(None)
+                continue
+            entity_str = str(result.vector.entity)
+            if self.annotations is not None:
+                # What upstream use cases currently know about this entity
+                # (None is meaningful: "no signal" must stay distinguishable,
+                # NFR-09). Read here, not before the batch, so a window of an
+                # entity annotated earlier in this same batch sees it.
+                result.evidence["entity_annotations"] = self.annotations.get(entity_str)
 
-        if self.annotations is not None:
-            exported = self.usecase.annotate(out)
-            if exported:
-                self.annotations.annotate(
-                    entity_str, exported, at=out.window_end, source=self.slug
-                )
-        return out
+            per_model_raw = {mslug: raws[row_i] for mslug, raws in raw_by_model.items()}
+            row_i += 1
+            per_model = {
+                mslug: self.bundle.calibrators[mslug].percentile(raw)
+                for mslug, raw in per_model_raw.items()
+            }
+            fused = self.usecase.fuse(per_model)
+            fired = self.usecase.gate(fused, result.evidence)
+
+            out = ScoreResult(
+                entity=result.vector.entity,
+                window_end=result.vector.computed_at.isoformat(),
+                fused_percentile=fused,
+                per_model=per_model,
+                fired=fired,
+                evidence=result.evidence,
+                features=x,
+                per_model_raw=per_model_raw,
+            )
+            if fired:
+                out.alert = self._build_alert(x, result, per_model, fused, is_synthetic)
+                self._apply_suppression(out)
+
+            if self.annotations is not None:
+                exported = self.usecase.annotate(out)
+                if exported:
+                    self.annotations.annotate(
+                        entity_str, exported, at=out.window_end, source=self.slug
+                    )
+            outputs.append(out)
+        return outputs
 
     # ------------------------------------------------------------------ #
 
