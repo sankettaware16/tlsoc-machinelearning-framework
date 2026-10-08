@@ -10,6 +10,53 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-08 — Revived on elkcc; the first window caught a UA-rotating scanner
+
+### D-027 · Inode-tracked checkpoints, a cron watchdog, and two weaknesses the first live catch exposed
+
+**Context.** Fresh bundles (bot_detection `v20261007T162845`, web_recon
+`v20261007T163432`) were approved in the console, both beating the August
+bundles in `check_candidate` (the August bot_detection bundle caught **0/10**
+spoofer canary windows; the new one 5/10). The runtime restarted 2026-10-08
+13:52 IST with August outputs archived to `data/state/archive/2026-08-run/`,
+so the Phase 3.6 measurement starts clean.
+
+**Fixed before start: rotation while down.** `FileSource` only detected
+rotation if the file had *shrunk* below the saved offset. A runtime down
+across a rotation returns to a new file that may already be larger (45 MB
+offset vs 760 MB `nginx.json`) and would seek into the middle of a different
+file. Checkpoints now carry inodes; legacy ones keep the size check.
+
+**Supervision.** No root on elkcc, so `deploy/soc-ml-watchdog.sh` runs from
+the user crontab every 5 minutes and logs every restart to `runtime.log`.
+
+**First window, first catch.** `34.39.165.91` (GCP) made 193 requests in 18 s
+to `landing.iitb.ac.in` — 163 distinct paths, 179 × 404, probing `/.env`,
+`/@fs/.env` (Vite file disclosure), `/graphql`, source maps — while rotating
+**34 user-agents impersonating AI crawlers** (Grok, ClaudeBot, CCBot,
+Bytespider, DuckAssistBot). web_recon fired critical. Two weaknesses showed:
+
+1. **UA rotation shatters the entity.** The key is `(server, ip, ua_hash)`,
+   so one scanner became 36 entities and 36 fires: dedup could not fold them,
+   and they spent the whole day's delivery budget (3 delivered, 35 digested)
+   in one window. Worse, most fragments had 5-12 events against a floor of 5.
+   With ~2× more user-agents, every fragment drops under the floor and **the
+   scan goes undetected**. That is cheap, deliberate evasion.
+2. **Claiming to be a bot buys a down-weight.** 36 of 38 fires carried
+   `downweighted_by: known/borderline automation`. Unverified claims to be a
+   crawler lower the human-likeness score, and D-022 down-weights low
+   human-likeness, so the impersonation reduces severity. This is the D-024
+   open question with a concrete exploit attached.
+
+**Not decided here.** Both are detection-semantics changes: an IP-level
+aggregate alongside the entity key (folding and floor), and reversing D-022's
+borderline down-weight for web_recon. They wait for the operator's call.
+
+**Lives in.** `ingest/file.py`, `tests/test_ingest.py`,
+`deploy/soc-ml-watchdog.sh`.
+
+---
+
 ## 2026-10-07 — Reviving the elkcc deployment after 46 days down
 
 ### D-026 · Pin BLAS/OpenMP pools to one thread in the CLI entry point
