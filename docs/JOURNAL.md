@@ -10,6 +10,43 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-10 — Delivery state rides the checkpoint
+
+### D-029 · The daily cap and open cooldowns must survive a restart
+
+**Context.** The first 24-hour review after the revival showed web_recon
+with **6 delivered on 2026-10-08 against a 3/day budget**: three at 08:20 UTC
+from the morning run, three at 14:10 UTC — minutes after the D-028 restart.
+`AlertBudget` counts and `AlertDeduplicator` cooldowns lived only in memory,
+so every restart granted a fresh day's allowance and re-delivered entities
+whose alert was still open. A crash loop would deliver the budget per
+restart; the watchdog (D-027) makes restarts routine, which makes this worse,
+not better.
+
+**Decision.** Both carry `export_state()` / `restore_state()` and ride the
+runtime checkpoint under `delivery[slug]`, next to the crawler-politeness
+memory (D-023) and the inode-tracked offsets (D-027). Legacy checkpoints
+restore as empty state. The checkpoint is written every 30 s, so at most
+30 s of delivery decisions can be lost on an unclean kill — the same bound
+the read offset already has. The pre-fix elkcc checkpoint was seeded once
+from the alerts files and score logs so the deploying restart did not itself
+re-trigger the bug.
+
+**Also recorded here: bot_detection's first production catch** (2026-10-09
+02:50–12:15 UTC). Thirty Alibaba Cloud addresses (`47.82.11.x`, `47.79.13.x`)
+sharing one browser user-agent, each fetching 5–8 page assets per 5 minutes
+with machine-regular timing around the clock: P(bot|behaviour) 1.0,
+human-likeness 0.0003, sustained through the 30-minute gate. 1,857 fires →
+3 delivered, 1,518 folded, 336 digested. Whether it is hostile or a benign
+scraper is the analyst's verdict (`benign-true-positive` exists for this);
+the detector's logic held.
+
+**Lives in.** `detection/budget.py`, `detection/dedup.py`,
+`detection/runtime.py` (`_save_checkpoint`, `_restore_checkpoint`),
+`tests/test_detection_lifecycle.py`.
+
+---
+
 ## 2026-10-08 — The console said STOPPED every four minutes; the runtime was scoring
 
 ### D-028 · Score a closed bucket as one batch, and tick health per window

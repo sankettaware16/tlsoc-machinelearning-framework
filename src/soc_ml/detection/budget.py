@@ -46,3 +46,16 @@ class AlertBudget:
         self._counts[key] = used + 1
         self.stats["delivered"] += 1
         return BudgetDecision.DELIVER
+
+    # -- durable state ----------------------------------------------------- #
+    # The cap is a per-day promise to the SOC; kept only in memory it restarts
+    # with the process, so every restart (or a crash loop) delivers a fresh
+    # day's allowance. Carried in the runtime checkpoint.
+
+    def export_state(self) -> dict:
+        return {"counts": [[s, d, n] for (s, d), n in self._counts.items()]}
+
+    def restore_state(self, doc: dict) -> None:
+        self._counts = {
+            (str(s), str(d)): int(n) for s, d, n in doc.get("counts") or []
+        }

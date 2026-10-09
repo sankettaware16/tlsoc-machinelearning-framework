@@ -72,6 +72,34 @@ def test_budget_is_per_server_per_day() -> None:
     assert b.decide(alert(server="a", offset_s=86400)) == BudgetDecision.DELIVER
 
 
+def test_budget_state_survives_export_and_restore() -> None:
+    b = AlertBudget(daily_budget=2)
+    b.decide(alert(server="a"))
+    doc = json.loads(json.dumps(b.export_state()))  # through disk, as the runtime does
+
+    restored = AlertBudget(daily_budget=2)
+    restored.restore_state(doc)
+    assert restored.decide(alert(server="a", offset_s=10)) == BudgetDecision.DELIVER
+    assert restored.decide(alert(server="a", offset_s=20)) == BudgetDecision.DIGEST, (
+        "the day's count must carry across a restart"
+    )
+    assert AlertBudget(daily_budget=2).restore_state({}) is None  # legacy checkpoint
+
+
+def test_dedup_state_survives_export_and_restore() -> None:
+    d = AlertDeduplicator(cooldown_s=1800)
+    d.decide(alert(ip="1.1.1.1", offset_s=0))
+    doc = json.loads(json.dumps(d.export_state()))
+
+    restored = AlertDeduplicator(cooldown_s=1800)
+    restored.restore_state(doc)
+    assert restored.decide(alert(ip="1.1.1.1", offset_s=600)).deliver is False, (
+        "still inside the open alert's cooldown after a restart -> fold"
+    )
+    assert restored.decide(alert(ip="1.1.1.1", offset_s=3000)).deliver is True
+    assert restored.decide(alert(ip="2.2.2.2", offset_s=600)).deliver is True
+
+
 # -------------------------------- drift -------------------------------- #
 
 
@@ -205,6 +233,65 @@ def test_runtime_checkpoint_resumes_without_reprocessing(tmp_path: Path) -> None
     rt = DetectionRuntime(cfg2, log=lambda *_: None)
     rt.run()
     assert rt.stats["events"] == 0, "resumed run must not reprocess consumed events"
+
+
+def test_restart_keeps_the_daily_cap_and_open_cooldowns(tmp_path: Path) -> None:
+    """elkcc 2026-10-08: a restart granted a fresh 3/day allowance and
+    re-delivered entities whose alert was still open. Delivery state must
+    ride the checkpoint like the read offset does."""
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    log = incoming / "logs.json"
+    _write_events(log, _normal_and_scan())
+
+    cfg = RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                        follow=False, allow_cold_start=True, daily_alert_budget=1)
+    first = DetectionRuntime(cfg, log=lambda *_: None)
+    first.run()
+    assert first.stats["alerts_delivered"] == 1, "the scanner uses the day's budget"
+
+    # Ten minutes later: the same scanner continues (inside its 30-min
+    # cooldown) and a second scanner appears, on the same event-time day.
+    later = T0 + timedelta(seconds=4600)
+    more = []
+    for ip in ("203.0.113.7", "203.0.113.8"):
+        for i in range(60):
+            more.append(Event(
+                timestamp=later + timedelta(seconds=i * 2),
+                observer=Observer(server="web01"),
+                source_ip=ip, geo_country_iso="ZZ",
+                url_path=f"/secret/dump_{i}.sql", status_code=404,
+                http_referrer=None, user_agent="scan/1.0", body_bytes=100,
+                original=f"GET /secret/dump_{i}.sql 404",
+            ))
+    more.sort(key=lambda e: e.timestamp)
+    with log.open("a", encoding="utf-8") as fh:
+        for e in more:
+            fh.write(json.dumps({
+                "@timestamp": e.timestamp.isoformat(),
+                "observer": {"server": "web01"},
+                "source": {"ip": e.source_ip, "geo": {"country_iso_code": "ZZ"}},
+                "http": {"request": {"method": "GET"},
+                         "response": {"status_code": 404}},
+                "url": {"path": e.url_path},
+                "user_agent": {"original": e.user_agent},
+                "event": {"original": e.original},
+            }) + "\n")
+
+    second = DetectionRuntime(
+        RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                      follow=False, daily_alert_budget=1),
+        log=lambda *_: None,
+    )
+    second.run()
+    fired = sum(second.stats[k] for k in
+                ("alerts_delivered", "alerts_folded", "alerts_digested", "alerts_suppressed"))
+    assert fired >= 2, "both scanners must still fire after the restart"
+    assert second.stats["alerts_folded"] >= 1, "the continuing scanner folds into its open alert"
+    assert second.stats["alerts_delivered"] == 0, (
+        "the day's single delivery was already spent before the restart"
+    )
+    assert second.stats["alerts_digested"] >= 1, "the new scanner goes to the digest"
 
 
 def test_runtime_shadow_mode_delivers_nothing(tmp_path: Path) -> None:

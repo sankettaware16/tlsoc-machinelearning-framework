@@ -70,6 +70,28 @@ class AlertDeduplicator:
     def open_count(self) -> int:
         return len(self._open)
 
+    # -- durable state ----------------------------------------------------- #
+    # Lost on restart, an open alert's cooldown re-delivers the same entity
+    # as a brand-new alert. Carried in the runtime checkpoint; entries past
+    # their cooldown are evicted on the first decision after restore.
+
+    def export_state(self) -> dict:
+        return {
+            "open": [
+                [e.server, e.ip, e.ua_hash, s.alert_id, s.last.isoformat(),
+                 s.folded, s.peak]
+                for e, s in self._open.items()
+            ]
+        }
+
+    def restore_state(self, doc: dict) -> None:
+        self._open = {}
+        for server, ip, ua_hash, alert_id, last, folded, peak in doc.get("open") or []:
+            self._open[EntityKey(server=server, ip=ip, ua_hash=ua_hash)] = _OpenAlert(
+                alert_id=str(alert_id), last=datetime.fromisoformat(last),
+                folded=int(folded), peak=float(peak),
+            )
+
 
 @dataclass(slots=True)
 class _OpenAlert:

@@ -496,6 +496,15 @@ class DetectionRuntime:
                 for runner in self.runners:
                     if runner.builder:
                         runner.builder.restore_state(doc)
+                # Delivery state too: the daily cap and the open-alert
+                # cooldowns are promises to the SOC that must not restart
+                # with the process (elkcc 2026-10-08: 3 extra deliveries on
+                # a 3/day budget, right after a restart).
+                delivery = doc.get("delivery") or {}
+                for runner in self.runners:
+                    state = delivery.get(runner.slug) or {}
+                    runner.budget.restore_state(state.get("budget") or {})
+                    runner.dedup.restore_state(state.get("dedup") or {})
                 self.log("[runtime] resumed from checkpoint")
             except Exception as exc:
                 self.log(f"[runtime] WARN: checkpoint unreadable ({exc}); starting fresh")
@@ -508,6 +517,13 @@ class DetectionRuntime:
                 for pair in runner.builder.export_state()["family_robots"]:
                     family.add(tuple(pair))
         doc["family_robots"] = sorted(list(pair) for pair in family)
+        doc["delivery"] = {
+            runner.slug: {
+                "budget": runner.budget.export_state(),
+                "dedup": runner.dedup.export_state(),
+            }
+            for runner in self.runners
+        }
         tmp = self._ckpt_path().with_suffix(".tmp")
         tmp.write_text(json.dumps(doc), encoding="utf-8")
         tmp.replace(self._ckpt_path())
