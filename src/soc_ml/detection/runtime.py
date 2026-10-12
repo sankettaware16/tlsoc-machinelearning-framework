@@ -187,6 +187,7 @@ class DetectionRuntime:
         self.annotations = EntityAnnotations()
 
         self._stop = False
+        self._source: FileSource | None = None
         self._started = time.monotonic()
         self.stats = {
             "events": 0,
@@ -215,6 +216,7 @@ class DetectionRuntime:
             dlq_path=self.state_dir / f"{self.cfg.set_key}_dlq.ndjson",
         )
         self._restore_checkpoint(source)
+        self._source = source
         if self.cfg.mode == "live":
             for runner in self.runners:
                 self._open_sink(runner)
@@ -579,10 +581,24 @@ class DetectionRuntime:
     # Shutdown
     # ------------------------------------------------------------------ #
 
+    def request_stop(self) -> None:
+        """Finish the current pass, drain, checkpoint, exit.
+
+        The event loop only sees ``_stop`` when an event arrives, and a
+        following source sleeps between polls — so a stop request during a
+        quiet feed (the parser already stopped at reboot, say) would not be
+        honoured until the OS force-kills the process, losing whatever the
+        last checkpoint did not cover. Stopping the source makes ``read()``
+        return after its current pass instead.
+        """
+        self._stop = True
+        if self._source is not None:
+            self._source.stop()
+
     def _install_signals(self) -> None:
         def handler(signum, _frame):
             self.log(f"[runtime] signal {signum} — draining and shutting down")
-            self._stop = True
+            self.request_stop()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
