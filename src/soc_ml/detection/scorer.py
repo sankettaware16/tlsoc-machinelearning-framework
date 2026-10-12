@@ -227,6 +227,17 @@ class Scorer:
                 "rule_id": self.usecase_cls.usecase_id,
                 "rule_name": self.usecase_cls.title,
                 "synthetic": synthetic,
+                # What this address did across all its user-agents in the
+                # window — the rotation a per-entity alert cannot show (D-031).
+                **(
+                    {"source": {
+                        "events": result.evidence["source_event_count"],
+                        "user_agents": result.evidence["source_ua_count"],
+                        "distinct_paths": result.evidence["source_distinct_paths"],
+                    }}
+                    if "source_ua_count" in result.evidence
+                    else {}
+                ),
                 # The upstream annotation snapshot the delivery decision saw —
                 # audit context for suppress/downweight (NFR-09).
                 **(

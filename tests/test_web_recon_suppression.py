@@ -74,13 +74,24 @@ def test_verified_but_impolite_crawler_is_only_downweighted() -> None:
     assert "robots.txt" in reason
 
 
-def test_borderline_automation_is_downweighted() -> None:
+def test_known_crawler_cluster_is_downweighted() -> None:
     uc = WebRecon(EnvironmentProfile())
-    kind, _ = uc.suppression({"entity_annotations": _ann(
-        **{"crawler.is_verified": False, "crawler.is_known": False,
+    kind, reason = uc.suppression({"entity_annotations": _ann(
+        **{"crawler.is_verified": False, "crawler.is_known": True,
            "crawler.human_likeness": 0.3}
     )})
-    assert kind == "downweight"
+    assert kind == "downweight" and "known-crawler" in reason
+
+
+def test_low_human_likeness_alone_is_not_a_mitigation() -> None:
+    """D-031: on elkcc every scanner that *claimed* a bot user-agent earned a
+    softer severity for it. For a reconnaissance alert, behaving like a
+    machine is the finding, not an excuse."""
+    uc = WebRecon(EnvironmentProfile())
+    assert uc.suppression({"entity_annotations": _ann(
+        **{"crawler.is_verified": False, "crawler.is_known": False,
+           "crawler.human_likeness": 0.0003}
+    )}) is None
 
 
 def test_human_or_missing_annotation_delivers_normally() -> None:
@@ -160,11 +171,20 @@ def test_scorer_suppresses_and_downweights_fired_alerts(tmp_path: Path) -> None:
         for o in suppressed
     ), "the alert document carries the annotation snapshot it acted on"
 
-    # borderline annotation: delivered, one severity band lower, reason on doc
+    # unverified, merely bot-like: delivered at full severity (D-031)
+    store3 = EntityAnnotations()
+    botlike = {"crawler.human_likeness": 0.2, "crawler.is_known": False,
+               "crawler.is_verified": False, "crawler.robots_txt": False}
+    store3.annotate(entity, botlike, at=T0.isoformat(), source="bot_detection")
+    unweighted = _fired_outcomes(Scorer(WebRecon, bundle, store3), bundle, burst)
+    assert unweighted and all("downweighted_by" not in o.alert.links for o in unweighted)
+    assert unweighted[0].alert.severity_score == plain[0].alert.severity_score
+
+    # known-crawler cluster: delivered, one severity band lower, reason on doc
     store2 = EntityAnnotations()
-    borderline = {"crawler.human_likeness": 0.2, "crawler.is_known": False,
-                  "crawler.is_verified": False, "crawler.robots_txt": False}
-    store2.annotate(entity, borderline, at=T0.isoformat(), source="bot_detection")
+    known = {"crawler.human_likeness": 0.2, "crawler.is_known": True,
+             "crawler.is_verified": False, "crawler.robots_txt": False}
+    store2.annotate(entity, known, at=T0.isoformat(), source="bot_detection")
     weighted = _fired_outcomes(Scorer(WebRecon, bundle, store2), bundle, burst)
     assert weighted and all(o.alert.delivered for o in weighted)
     assert all("downweighted_by" in o.alert.links for o in weighted)

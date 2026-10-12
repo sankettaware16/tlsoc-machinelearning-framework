@@ -21,11 +21,17 @@ Crawler suppression (Phase 3.5, JOURNAL D-019): this use case consumes
 bot_detection's exported crawler annotation. The gate itself is untouched —
 detection still fires and is still recorded — but a fired alert on a
 **verified, polite** crawler (published-range identity + robots.txt fetched)
-is suppressed at the delivery layer, and a known/borderline automation entity
-is down-weighted one severity band. Every such decision is written onto the
-alert document (``suppressed_by`` / ``links``) — never silent (NFR-09). When
-bot_detection is not deployed, the annotation is absent and behaviour is
-exactly as before: the missing signal means "unknown", not "human".
+is suppressed at the delivery layer, and a verified-but-impolite or
+known-cluster crawler is down-weighted one severity band. Every such decision
+is written onto the alert document (``suppressed_by`` / ``links``) — never
+silent (NFR-09). When bot_detection is not deployed, the annotation is absent
+and behaviour is exactly as before: the missing signal means "unknown", not
+"human".
+
+Low human-likeness on its own is **not** a down-weight here (D-031, reversing
+part of D-022): on elkcc every scanner that claimed a bot user-agent earned a
+softer severity for it, and for a reconnaissance alert "behaves like a
+machine" is the finding, not a mitigation.
 
 Not yet wired (arrives with later phases, by design):
 * progressive alerting (first candidate "low", upgraded over a 10-min window);
@@ -110,8 +116,6 @@ class WebRecon(UseCase):
     # Borderline automation: the exported human-likeness below an even-odds
     # read. A probability midpoint, not a tunable — it lives in code like the
     # spec's percentile gates (FR-62 concerns config, and this is not there).
-    BORDERLINE_HUMAN_LIKENESS = 0.5
-
     def suppression(self, evidence: dict[str, Any]) -> tuple[str, str] | None:
         """Consume the crawler annotation: suppress certain, down-weight borderline.
 
@@ -137,11 +141,11 @@ class WebRecon(UseCase):
                 "bot_detection: verified crawler ignoring robots.txt "
                 f"(human_likeness {likeness})",
             )
-        if ann.get("crawler.is_known") or (
-            likeness is not None and likeness < self.BORDERLINE_HUMAN_LIKENESS
-        ):
+        if ann.get("crawler.is_known"):
+            # Clustered with declared crawlers by behaviour — automation that
+            # looks like the legitimate kind. Still delivered, one band softer.
             return (
                 "downweight",
-                f"bot_detection: known/borderline automation (human_likeness {likeness})",
+                f"bot_detection: known-crawler cluster (human_likeness {likeness})",
             )
         return None

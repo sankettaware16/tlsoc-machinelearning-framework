@@ -10,6 +10,67 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-12 — One address, many user-agents: seen together, folded together
+
+### D-031 · Address-level evidence and folding; low human-likeness is no longer a mitigation
+
+**Context.** Four days of live data after the revival made the dominant
+noise source unambiguous: cloud scanners rotating user-agents. The entity
+key is `(server, ip, ua_hash)`, so one address became 36 entities and 36
+fires in a window (D-027), spent the day's budget on fragments of itself,
+and — because D-022 down-weights low human-likeness — got a *softer*
+severity for claiming to be a bot. 34% of all web_recon fires came from
+such addresses; the three alerts delivered each day were whichever fragments
+arrived first after midnight.
+
+**Decisions.**
+
+1. **Every window carries its address's aggregate** for the bucket —
+   `source_event_count`, `source_ua_count`, `source_distinct_paths` — kept
+   by the builder per `(server, ip, bucket)` and released when the bucket's
+   windows close. Evidence only, never model input: the models are trained on
+   entity windows and stay so. The alert document carries it as
+   `links.source` and the narrative says "the same address used N different
+   user-agents in this window".
+2. **Delivery folds by address.** `AlertDeduplicator` keeps an open alert
+   per `(server, ip)` beside the per-entity one; a fire from the same address
+   under another user-agent folds into it with `folded_by: "source"` in the
+   score log and the rotation counted on the open alert. Detection is
+   untouched (every fragment still fires and is recorded). State rides the
+   checkpoint; a pre-D-031 checkpoint rebuilds the address view from its
+   open entities so the deploying restart does not re-deliver.
+3. **web_recon no longer down-weights for low human-likeness alone**
+   (reversing that clause of D-022). Verified-and-polite still suppresses,
+   verified-but-impolite and known-cluster still down-weight. For a
+   reconnaissance alert, "behaves like a machine" is the finding.
+
+**Measured** on 400k real events from elkcc (2026-10-12 10:34–13:04 UTC,
+216 addresses with ≥5 user-agents), same bundle both runs: raw fires 112 →
+112, delivered **105 → 45** (61 of the 105 were extra fragments of an
+address already alerted), distinct addresses 44 → 44, canary caught both
+times. On the Oct 8 live run the same change turns 36 alerts into one.
+
+**Deliberately not done: a floor that reads the address aggregate.** With
+enough rotation every fragment falls under the 5-request floor and the scan
+is invisible; `source_event_count` on every window makes the fix a one-line
+change. But the same rule would admit every 1-2 request fragment behind a
+busy NAT (a campus gateway has hundreds of user-agents and thousands of
+requests per window), and the floor exists precisely because tiny windows
+have degenerate features. Pinned by
+`test_known_gap_fragments_under_the_floor_are_not_detected`; closing it
+needs either a rotation signal the models are trained on (user-agent churn:
+each UA used once and dropped — NATs reuse theirs) or address-level windows
+in training. Also deferred: the daily cap prefers arrival order over
+severity; folding removes most of the pressure, a severity-aware cap is a
+separate decision.
+
+**Lives in.** `features/window_features.py` (`_SourceAgg`),
+`detection/dedup.py` (`_OpenSource`, `folded_by`), `detection/runtime.py`,
+`detection/scorer.py` (`links.source`), `explain/context.py`,
+`usecases/web_recon.py`, `tests/test_source_folding.py`.
+
+---
+
 ## 2026-10-12 — First reboot: the detector came back by itself, the console did not
 
 ### D-030 · A stop request must end an idle runtime; the watchdog keeps the console too
