@@ -15,10 +15,13 @@ Answers the two questions that should be asked before clicking Approve:
    lowers the fire rate but misses the canary must not be approved.
 
 3. **Can it still see the attacks we have actually had?** A synthetic canary
-   is one shape. ``--incident FILE`` replays a captured real attack (raw
-   parser output, kept under ``data/incidents/``, never committed) through
-   both bundles; a candidate that goes blind to an attack the serving model
-   catches must not be approved. On elkcc, 2026-10-12, a retrained
+   is one shape. Every captured real attack under
+   ``data/incidents/<use case>/*.ndjson`` (raw parser output, never
+   committed) is replayed through both bundles, plus any ``--incident FILE``;
+   a candidate that goes blind to an attack the serving model catches must
+   not be approved. Incidents are filed per use case on purpose: a headless
+   botnet is bot_detection's evidence, and web_recon *not* firing on it is
+   precision, not blindness. On elkcc, 2026-10-12, a retrained
    bot_detection passed its canary and fired on none of 756 windows of a
    live headless-browser botnet the serving model caught (D-032).
 
@@ -188,12 +191,14 @@ def main() -> int:
           f"{results['serving'].get('flushed_windows', 0):,} still-open windows "
           f"were flushed at the end and excluded.")
 
+    filed = sorted((Path(args.out) / "incidents" / slug).glob("*.ndjson"))
+    incidents = [str(p) for p in filed] + list(args.incident)
     blind_to: list[str] = []
     weaker_on: list[str] = []
-    if args.incident:
+    if incidents:
         print(f"\n{'incident':<44}{'serving':>14}{'candidate':>14}")
         print("-" * 72)
-    for path in args.incident:
+    for path in incidents:
         stream_i = list(events(path, 0))
         if not stream_i:
             print(f"{Path(path).name:<44}  (no request events read)")
