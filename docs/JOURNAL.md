@@ -10,6 +10,73 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-12 — A retrain that passes every check and is blind to the live attack
+
+### D-032 · Real incidents are regression gates; bot_detection is not safe to retrain yet
+
+**Context.** After D-031 both detectors were retrained on the longest corpus
+the box still held (17 h: the parser now rotates at 2 GB and keeps one old
+file). web_recon's candidate looked fine. bot_detection's first candidate
+caught its synthetic spoofer canary and fired on 0.010% of windows — and on
+replay **fired on none of 756 windows of the Alibaba headless botnet** the
+serving model caught 176 times (P(bot) 0.22 vs 0.9998). The canary had
+passed, so the existing approval check would have let it through.
+
+**Quarantine did not fix it.** Retrained with both botnet /24s removed from
+the corpus, the candidate got *worse*: 0/10 canary, 0 botnet fires. So the
+cause is not contamination. Measured on the training corpus:
+
+| class | rotating | 404 | asset fetch | no referrer | hour spread |
+|---|---|---|---|---|---|
+| declared bots | 16% | 0.19 | 0.54 | 0.53 | 0.06 |
+| browsers | 2% | 0.04 | 0.42 | 0.14 | 0.06 |
+| the botnet | 0% | 0.00 | **1.00** | **0.00** | **0.17** |
+
+The botnet is a headless browser: it fetches page assets and sends
+referrers, so on the features that best separate *declared* bots from
+browsers it looks more browser-like than browsers do. Its only tells are
+temporal (round-the-clock activity, regular timing). UC-04's label teaches
+"behaves like something that admits to being a bot"; a spoofer that imitates
+a browser rather than a crawler is outside what that label can teach. The
+August-era model catching it is a property of that training sample, not of
+the method — it cannot be reproduced by retraining today.
+
+**Decisions.**
+
+1. **Keep serving bot_detection `v20261007T162845`.** Neither new candidate
+   is approvable. Retraining UC-04 is blocked until its label or features
+   are redesigned for the headless-browser shape (temporal features carrying
+   more weight, or a positive class not defined by the user-agent claim) —
+   a design task, not a calibration one.
+2. **Captured real attacks become approval gates.** `check_candidate`
+   replays every file under `data/incidents/<use case>/` through serving and
+   candidate; a candidate that catches none of what serving catches is DO
+   NOT APPROVE, one that misses addresses serving catches is a WARNING.
+   Filed per use case: the botnet replayed through web_recon made the
+   candidate look "blind" for correctly not calling a headless browser a
+   scan. Judged by **addresses**, not windows: since D-031 one address is one
+   alert. Incidents are raw production logs and stay on the box
+   (`data/incidents/*` and `*.ndjson` are gitignored). Seeded with
+   `bot_detection/2026-10-09-alibaba-headless-botnet` (25k events, 68
+   addresses) and `web_recon/2026-10-12-ua-rotating-scanners` (9 scanners,
+   34 user-agents each, captured after the candidates' training window).
+3. **web_recon `v20261012T132802` is approvable:** canary 2/2, all 9 real
+   scanners caught (as serving), background fire rate 1.63% → 0.66%. Its
+   per-scanner margin is thinner — it fires on 77 of 306 fragments against
+   serving's 241, two scanners on a single window — consistent with a corpus
+   full of scanners teaching that scanning is partly normal. Folding makes
+   the SOC-visible result identical; the margin is worth watching.
+
+**Rules out.** Approving on canary plus fire rate alone; treating "fires
+less" as "better" without a by-address replay of known attacks; retraining
+UC-04 on schedule while its label cannot represent the attack it is
+catching today.
+
+**Lives in.** `scripts/check_candidate.py` (`incidents`, `fired_ips`),
+`.gitignore` (`data/incidents/*`).
+
+---
+
 ## 2026-10-12 — One address, many user-agents: seen together, folded together
 
 ### D-031 · Address-level evidence and folding; low human-likeness is no longer a mitigation
