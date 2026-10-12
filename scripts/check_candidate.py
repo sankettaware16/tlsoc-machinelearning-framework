@@ -82,6 +82,7 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
 
     windows = fired = canary_windows = canary_fired = 0
     top: list[tuple[float, str, int]] = []
+    fired_ips: set[str] = set()
 
     def handle(results: list) -> None:
         nonlocal windows, fired, canary_windows, canary_fired
@@ -95,6 +96,7 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
             if outcome.fired:
                 fired += 1
                 canary_fired += int(synthetic)
+                fired_ips.add(outcome.entity.ip)
                 if not synthetic:
                     top.append((outcome.fused_percentile, str(outcome.entity),
                                 outcome.evidence.get("event_count", 0)))
@@ -123,6 +125,7 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
         # where every window is part of the attack.
         "windows_all": windows,
         "fired_all": fired,
+        "fired_ips": fired_ips,
         "rate_pct": (100.0 * natural_fired / natural_windows) if natural_windows else 0.0,
         "flushed_windows": windows - natural_windows,
         "canary_windows": canary_windows,
@@ -196,23 +199,30 @@ def main() -> int:
     blind_to: list[str] = []
     weaker_on: list[str] = []
     if incidents:
-        print(f"\n{'incident':<44}{'serving':>14}{'candidate':>14}")
-        print("-" * 72)
+        # Addresses decide the verdict: since D-031 one address is one alert,
+        # however many user-agent fragments of it fire. Windows are context.
+        print(f"\n{'incident':<44}{'serving':>16}{'candidate':>16}")
+        print(f"{'':<44}{'addrs (windows)':>16}{'addrs (windows)':>16}")
+        print("-" * 76)
     for path in incidents:
         stream_i = list(events(path, 0))
         if not stream_i:
             print(f"{Path(path).name:<44}  (no request events read)")
             continue
+        addresses = {e.source_ip for e in stream_i if e.is_request}
         caught = {}
         for label in ("serving", "candidate"):
             r = score_through(uc_cls, bundles[label], stream_i, [])
-            caught[label] = (r["fired_all"], r["windows_all"])
-        (sf, sw), (cf, cw) = caught["serving"], caught["candidate"]
-        print(f"{Path(path).name:<44}{f'{sf}/{sw}':>14}{f'{cf}/{cw}':>14}")
-        if sf and not cf:
+            caught[label] = (r["fired_ips"], r["fired_all"], r["windows_all"])
+        (s_ips, sf, sw), (c_ips, cf, cw) = caught["serving"], caught["candidate"]
+        n = len(addresses)
+        print(f"{Path(path).name:<44}"
+              f"{f'{len(s_ips)}/{n} ({sf}/{sw})':>16}{f'{len(c_ips)}/{n} ({cf}/{cw})':>16}")
+        if s_ips and not c_ips:
             blind_to.append(Path(path).name)
-        elif sf and cf < sf / 2:
-            weaker_on.append(Path(path).name)
+        elif s_ips - c_ips:
+            weaker_on.append(f"{Path(path).name} — misses {len(s_ips - c_ips)} "
+                             f"address(es) serving catches")
 
     s, c = results["serving"], results["candidate"]
     print("\nverdict")
@@ -224,8 +234,8 @@ def main() -> int:
         print("  DO NOT APPROVE — the candidate is blind to a real attack the serving")
         print(f"  model catches: {', '.join(blind_to)}")
         return 2
-    for name in weaker_on:
-        print(f"  WARNING: candidate catches under half of what serving catches on {name}")
+    for note in weaker_on:
+        print(f"  WARNING: {note}")
     if c["canary_windows"]:
         print("  canary caught by the candidate — it can still see a textbook attack")
     else:
