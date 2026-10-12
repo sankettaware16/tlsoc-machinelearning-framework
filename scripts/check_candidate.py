@@ -14,6 +14,14 @@ Answers the two questions that should be asked before clicking Approve:
    injects it and reports whether each bundle catches it. A candidate that
    lowers the fire rate but misses the canary must not be approved.
 
+3. **Can it still see the attacks we have actually had?** A synthetic canary
+   is one shape. ``--incident FILE`` replays a captured real attack (raw
+   parser output, kept under ``data/incidents/``, never committed) through
+   both bundles; a candidate that goes blind to an attack the serving model
+   catches must not be approved. On elkcc, 2026-10-12, a retrained
+   bot_detection passed its canary and fired on none of 756 windows of a
+   live headless-browser botnet the serving model caught (D-032).
+
 Read-only with respect to the registry and the running detector: it loads
 bundles, scores in memory, and writes nothing.
 
@@ -108,6 +116,10 @@ def score_through(uc_cls, bundle, stream, canary_events) -> dict:
     return {
         "windows": natural_windows,
         "fired": natural_fired,
+        # Including the final flush: right for a finite incident replay,
+        # where every window is part of the attack.
+        "windows_all": windows,
+        "fired_all": fired,
         "rate_pct": (100.0 * natural_fired / natural_windows) if natural_windows else 0.0,
         "flushed_windows": windows - natural_windows,
         "canary_windows": canary_windows,
@@ -123,6 +135,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=200_000,
                     help="events to replay (0 = all; bound it on a busy box)")
     ap.add_argument("--out", default="data")
+    ap.add_argument("--incident", action="append", default=[], metavar="FILE",
+                    help="captured real attack (parser output) the candidate must "
+                         "still catch; repeatable")
     args = ap.parse_args()
 
     slug = args.uc.replace("-", "_")
@@ -148,8 +163,9 @@ def main() -> int:
     print(f"read {len(stream):,} events spanning {span_h:.2f}h\n")
 
     results = {}
+    bundles = {}
     for label, version in (("serving", serving), ("candidate", candidate)):
-        bundle = reg.load(slug, version, factories)
+        bundle = bundles[label] = reg.load(slug, version, factories)
         server = bundle.profile.dominant_server() or "_"
         canary = uc_cls.canary(server, stream[0].timestamp + timedelta(minutes=30))
         results[label] = score_through(uc_cls, bundle, stream, canary)
@@ -172,12 +188,39 @@ def main() -> int:
           f"{results['serving'].get('flushed_windows', 0):,} still-open windows "
           f"were flushed at the end and excluded.")
 
+    blind_to: list[str] = []
+    weaker_on: list[str] = []
+    if args.incident:
+        print(f"\n{'incident':<44}{'serving':>14}{'candidate':>14}")
+        print("-" * 72)
+    for path in args.incident:
+        stream_i = list(events(path, 0))
+        if not stream_i:
+            print(f"{Path(path).name:<44}  (no request events read)")
+            continue
+        caught = {}
+        for label in ("serving", "candidate"):
+            r = score_through(uc_cls, bundles[label], stream_i, [])
+            caught[label] = (r["fired_all"], r["windows_all"])
+        (sf, sw), (cf, cw) = caught["serving"], caught["candidate"]
+        print(f"{Path(path).name:<44}{f'{sf}/{sw}':>14}{f'{cf}/{cw}':>14}")
+        if sf and not cf:
+            blind_to.append(Path(path).name)
+        elif sf and cf < sf / 2:
+            weaker_on.append(Path(path).name)
+
     s, c = results["serving"], results["candidate"]
     print("\nverdict")
     if c["canary_windows"] and not c["canary_fired"]:
         print("  DO NOT APPROVE — the candidate misses its own known-bad burst.")
         print("  Lower volume with no detection is a worse model, not a better one.")
         return 2
+    if blind_to:
+        print("  DO NOT APPROVE — the candidate is blind to a real attack the serving")
+        print(f"  model catches: {', '.join(blind_to)}")
+        return 2
+    for name in weaker_on:
+        print(f"  WARNING: candidate catches under half of what serving catches on {name}")
     if c["canary_windows"]:
         print("  canary caught by the candidate — it can still see a textbook attack")
     else:
