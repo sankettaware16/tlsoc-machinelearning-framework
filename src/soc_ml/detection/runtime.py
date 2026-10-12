@@ -149,6 +149,7 @@ class _UseCaseRunner:
             "windows": 0,
             "alerts_delivered": 0,
             "alerts_folded": 0,
+            "alerts_folded_by_source": 0,
             "alerts_digested": 0,
             "alerts_suppressed": 0,
             "last_drift_band": "unknown",
@@ -355,37 +356,42 @@ class DetectionRuntime:
                     # measured from the score log is a defect in itself, and
                     # `downweighted_by` lives nowhere else once an alert is
                     # folded or digested.
-                    self._score_record(runner, outcome, self._deliver(runner, outcome))
+                    disposition, detail = self._deliver(runner, outcome)
+                    self._score_record(runner, outcome, disposition, detail)
             else:
                 # observe / shadow: record everything, deliver nothing.
                 self._shadow_record(runner, outcome)
             self._tick(source)
 
-    def _deliver(self, runner: _UseCaseRunner, outcome) -> str:
-        """Apply the delivery pipeline; returns the disposition for the record."""
+    def _deliver(self, runner: _UseCaseRunner, outcome) -> tuple[str, dict]:
+        """Apply the delivery pipeline; returns (disposition, detail) for the record."""
         # 0. An upstream-suppressed alert never reaches the queue — but it is
         #    written, with its reason, to the per-slug suppressed log (NFR-09).
         if not outcome.alert.delivered:
             self._record_suppressed(runner, outcome.alert)
             runner.stats["alerts_suppressed"] += 1
             self.stats["alerts_suppressed"] += 1
-            return "suppressed"
-        # 1. Fold repeats of the same entity into one open alert (dedup).
+            return "suppressed", {}
+        # 1. Fold repeats of the same entity — or of the same address under
+        #    another user-agent — into one open alert (dedup, D-031).
         decision = runner.dedup.decide(outcome.alert)
         if not decision.deliver:
             runner.stats["alerts_folded"] += 1
             self.stats["alerts_folded"] += 1
-            return "folded"
+            if decision.folded_by == "source":
+                runner.stats["alerts_folded_by_source"] += 1
+            return "folded", {"folded_by": decision.folded_by,
+                              "folded_into": decision.folded_into}
         # 2. Cap daily delivery per server; overflow -> digest, never dropped.
         if runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
             self._digest(runner, outcome.alert)
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
-            return "digested"
+            return "digested", {}
         runner.sink.emit_alert(outcome.alert)
         runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1
-        return "delivered"
+        return "delivered", {}
 
     def _digest(self, runner: _UseCaseRunner, alert) -> None:
         if runner.digest_fh is None:
@@ -424,7 +430,8 @@ class DetectionRuntime:
         row = {**outcome.record(), "would_alert": outcome.fired}
         runner.shadow_fh.write(json.dumps(row) + "\n")
 
-    def _score_record(self, runner: _UseCaseRunner, outcome, disposition: str) -> None:
+    def _score_record(self, runner: _UseCaseRunner, outcome, disposition: str,
+                      detail: dict | None = None) -> None:
         """Live-mode audit line for a window that fired.
 
         Kept in its own file rather than appended to the shadow log: shadow
@@ -435,7 +442,7 @@ class DetectionRuntime:
         if runner.scores_fh is None:
             path = self.state_dir / f"{runner.slug}_scores.ndjson"
             runner.scores_fh = path.open("a", encoding="utf-8")
-        row = {**outcome.record(), "disposition": disposition}
+        row = {**outcome.record(), "disposition": disposition, **(detail or {})}
         runner.scores_fh.write(json.dumps(row) + "\n")
 
     # ------------------------------------------------------------------ #

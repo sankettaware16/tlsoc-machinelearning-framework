@@ -104,6 +104,13 @@ def narrative(
         f"({evidence.get('distinct_paths', '?')} distinct paths, "
         f"{evidence.get('n404', '?')} were 404) in 5 minutes."
     ]
+    rotation = evidence.get("source_ua_count") or 0
+    if rotation > 1:
+        parts.append(
+            f"The same address used {rotation} different user-agents in this "
+            f"window ({evidence.get('source_event_count', '?')} requests to "
+            f"{evidence.get('source_distinct_paths', '?')} distinct paths in all)."
+        )
     for entry in top[:3]:
         phrase = _FEATURE_PHRASES.get(entry["feature"], entry["feature"])
         parts.append(

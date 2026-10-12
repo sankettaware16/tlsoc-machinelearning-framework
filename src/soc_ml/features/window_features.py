@@ -66,6 +66,7 @@ _MAX_EVIDENCE_LINES = 10  # spec: alerts carry 3-10 verbatim lines
 _MAX_OPEN_WINDOWS = 250_000  # hard guard against a badly unsorted feed
 _MAX_TRACKED_ENTITIES = 200_000  # cross-window entity-memory cap
 _SWEEP_EVERY = 1000  # events between watermark sweeps
+_MAX_SOURCE_UAS = 256  # per-(server, ip, bucket) cap on distinct user-agents
 
 
 @dataclass(slots=True)
@@ -89,6 +90,23 @@ class _OpenWindow:
     raw_lines: deque = field(default_factory=lambda: deque(maxlen=_MAX_EVIDENCE_LINES))
     ua: str | None = None
     bot: BotWindowState = field(default_factory=BotWindowState)
+
+
+@dataclass(slots=True)
+class _SourceAgg:
+    """What one address did in one bucket, across all its user-agents.
+
+    The entity key is (server, ip, ua_hash), so a scanner that rotates its
+    user-agent shatters into many small windows. Each of them carries this
+    aggregate as evidence so the delivery layer and the analyst can see the
+    rotation; it is never model input (the models are trained on entity
+    windows and stay so).
+    """
+
+    count: int = 0
+    ua_hashes: set = field(default_factory=set)
+    paths: set = field(default_factory=set)
+    open_windows: int = 0
 
 
 @dataclass(slots=True)
@@ -127,6 +145,10 @@ class WindowFeatureBuilder:
         # (D-023 — found on production traffic). Naturally tiny: verified
         # families × servers.
         self._family_robots: set[tuple[str, str]] = set()
+        # (server, ip, bucket) -> aggregate over every user-agent of that
+        # address in that bucket. Lives exactly as long as the bucket's
+        # windows are open; released when the last of them closes.
+        self._sources: dict[tuple[str, str, int], _SourceAgg] = {}
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -163,7 +185,14 @@ class WindowFeatureBuilder:
                 start=datetime.fromtimestamp(bucket * self.window_s, tz=timezone.utc),
             )
             self._open[key] = window
+            self._source_for(event.entity, bucket).open_windows += 1
         self._fold(window, event, ts)
+        source = self._source_for(event.entity, bucket)
+        source.count += 1
+        if len(source.ua_hashes) < _MAX_SOURCE_UAS:
+            source.ua_hashes.add(event.entity.ua_hash)
+        if event.url_path and len(source.paths) < _MAX_DISTINCT_PATHS:
+            source.paths.add(event.url_path)
 
         self._since_sweep += 1
         if self._since_sweep >= _SWEEP_EVERY:
@@ -197,6 +226,13 @@ class WindowFeatureBuilder:
         return len(self._open)
 
     # ------------------------------------------------------------------ #
+
+    def _source_for(self, entity: EntityKey, bucket: int) -> _SourceAgg:
+        key = (entity.server, entity.ip, bucket)
+        agg = self._sources.get(key)
+        if agg is None:
+            agg = self._sources[key] = _SourceAgg()
+        return agg
 
     def _memory_for(self, entity: EntityKey) -> EntityMemory:
         memory = self._memory.pop(entity, None)
@@ -310,6 +346,12 @@ class WindowFeatureBuilder:
             values=values,
         )
         family = claimed_crawler_family(w.ua)
+        bucket = int(w.start.timestamp()) // self.window_s
+        source_key = (server, w.entity.ip, bucket)
+        source = self._sources.get(source_key) or _SourceAgg()
+        source.open_windows -= 1
+        if source.open_windows <= 0:
+            self._sources.pop(source_key, None)
         evidence = {
             "window_start": w.start.isoformat(),
             "window_end": (w.start + timedelta(seconds=self.window_s)).isoformat(),
@@ -319,6 +361,12 @@ class WindowFeatureBuilder:
             "distinct_paths_capped": w.paths_capped,
             "n404": w.n404,
             "user_agent": w.ua,
+            # The same address across all its user-agents in this bucket —
+            # a rotating scanner looks like many small entities; this is how
+            # the pieces are seen together (D-031).
+            "source_event_count": source.count,
+            "source_ua_count": len(source.ua_hashes),
+            "source_distinct_paths": len(source.paths),
             # Identity context for UC-04's gate and the crawler export —
             # evidence, deliberately never model input (models learn behavior,
             # not IP ranges).

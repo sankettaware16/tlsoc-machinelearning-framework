@@ -37,7 +37,7 @@ def test_dedup_folds_repeat_firings_of_one_entity() -> None:
     assert d.decide(alert(offset_s=0)).deliver is True
     assert d.decide(alert(offset_s=300)).deliver is False, "within cooldown -> fold"
     assert d.decide(alert(offset_s=600)).deliver is False
-    assert d.stats == {"delivered": 1, "folded": 2}
+    assert d.stats == {"delivered": 1, "folded": 2, "folded_by_source": 0}
 
 
 def test_dedup_redelivers_after_cooldown() -> None:
