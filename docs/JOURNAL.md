@@ -10,6 +10,35 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-12 — First reboot: the detector came back by itself, the console did not
+
+### D-030 · A stop request must end an idle runtime; the watchdog keeps the console too
+
+**Context.** elkcc was rebooted for a RAM upgrade (32 → 64 GB). The runtime
+drained cleanly on the OS's SIGTERM (`stopped — 9,450,137 events … 18
+delivered`), the cron watchdog restarted it four minutes after boot, and it
+resumed from the checkpoint with the day's budget and cooldowns intact — the
+D-027/D-029 chain held end to end. The operator console stayed down: it had
+been started by hand with `nohup` and nothing supervised it.
+
+**A latent bug found while preparing for the reboot.** The SIGTERM handler
+only set `_stop`, which the event loop checks *per event*; a following
+`FileSource` sleeps between polls and never returns. On a quiet feed — the
+parser stopped first at shutdown, a rotated-away input, a paused upstream —
+the runtime would ignore SIGTERM until the OS force-killed it, losing up to a
+checkpoint interval of state. It did not bite this time only because events
+were still flowing. `request_stop()` now also stops the source, so `read()`
+returns after its current pass and the normal drain runs. Pinned by a test
+that stops a following runtime on a static file; the old code never returns.
+
+**Decision.** `deploy/soc-ml-watchdog.sh` also restarts the console (opt out
+with `SOC_ML_UI_PORT=`). Every restart of either is logged.
+
+**Lives in.** `detection/runtime.py` (`request_stop`),
+`deploy/soc-ml-watchdog.sh`, `tests/test_detection_lifecycle.py`.
+
+---
+
 ## 2026-10-10 — Delivery state rides the checkpoint
 
 ### D-029 · The daily cap and open cooldowns must survive a restart

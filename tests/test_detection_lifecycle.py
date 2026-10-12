@@ -363,3 +363,30 @@ def test_records_reach_disk_without_a_clean_shutdown(tmp_path: Path) -> None:
     assert '"probe": true' in (
         tmp_path / "state" / "web_recon_scores.ndjson").read_text()
     runner.scores_fh.close()
+
+
+def test_stop_request_is_honoured_while_the_feed_is_idle(tmp_path: Path) -> None:
+    """A following runtime sleeps between polls; SIGTERM must still end it
+    promptly (reboot: the parser stops first, so no event ever arrives to
+    make the loop look at the stop flag)."""
+    import threading
+    import time
+
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", _normal_and_scan())
+    DetectionRuntime(RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                                   follow=False, allow_cold_start=True),
+                     log=lambda *_: None).run()
+
+    rt = DetectionRuntime(
+        RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                      follow=True, poll_interval_s=0.2),
+        log=lambda *_: None,
+    )
+    threading.Timer(1.0, rt.request_stop).start()
+    t0 = time.monotonic()
+    assert rt.run() == 0
+    assert time.monotonic() - t0 < 5.0, "must not wait for a next event to stop"
+    ckpt = json.loads((tmp_path / "state" / "web_recon_checkpoint.json").read_text())
+    assert "delivery" in ckpt, "the drain wrote a fresh checkpoint"
