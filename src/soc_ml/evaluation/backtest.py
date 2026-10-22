@@ -18,21 +18,23 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from soc_ml.alerting.file_sink import FileSink
+from soc_ml.core.contracts import Event
 from soc_ml.core.plugins import (
     registry as plugin_registry,
+)
+from soc_ml.core.plugins import (
     usecase_model_factories,
 )
-from soc_ml.core.contracts import Event
 from soc_ml.detection.dedup import AlertDeduplicator
-from soc_ml.fusion.progressive import Progression
 from soc_ml.detection.scorer import Scorer
 from soc_ml.evaluation.canary import is_canary_ip
 from soc_ml.features.window_features import WindowFeatureBuilder
+from soc_ml.fusion.progressive import Progression
 from soc_ml.ingest.file import FileSource
 from soc_ml.registry.store import ModelRegistry
 from soc_ml.training.trainer import TrainingError, train_bundle

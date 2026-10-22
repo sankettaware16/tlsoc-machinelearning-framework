@@ -8,7 +8,7 @@ catches the browser-declared, machine-behaving spoofer canary.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from soc_ml.baseline.profile import EnvironmentProfile
@@ -22,7 +22,7 @@ from soc_ml.evaluation.canary import (
 from soc_ml.features.bot_features import declared_bot
 from soc_ml.usecases.bot_detection import BotDetection
 
-T0 = datetime(2026, 7, 20, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 20, 8, 0, 0, tzinfo=UTC)
 
 
 def _uc() -> BotDetection:

@@ -28,7 +28,7 @@ class PercentileCalibrator:
     def __init__(self) -> None:
         self._grid: list[float] | None = None
 
-    def fit(self, scores: list[float]) -> "PercentileCalibrator":
+    def fit(self, scores: list[float]) -> PercentileCalibrator:
         import numpy as np
 
         if not scores:
@@ -56,13 +56,13 @@ class PercentileCalibrator:
         return {"grid": self._grid}
 
     @classmethod
-    def from_dict(cls, doc: dict) -> "PercentileCalibrator":
+    def from_dict(cls, doc: dict) -> PercentileCalibrator:
         cal = cls()
         cal._grid = [float(v) for v in doc["grid"]]
         return cal
 
     @staticmethod
-    def save_many(calibrators: dict[str, "PercentileCalibrator"], path: Path) -> None:
+    def save_many(calibrators: dict[str, PercentileCalibrator], path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({k: c.to_dict() for k, c in calibrators.items()}),
@@ -70,6 +70,6 @@ class PercentileCalibrator:
         )
 
     @staticmethod
-    def load_many(path: Path) -> dict[str, "PercentileCalibrator"]:
+    def load_many(path: Path) -> dict[str, PercentileCalibrator]:
         doc = json.loads(path.read_text(encoding="utf-8"))
         return {k: PercentileCalibrator.from_dict(v) for k, v in doc.items()}

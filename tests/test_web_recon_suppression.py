@@ -11,7 +11,7 @@ Googlebot-shaped false positive stops being delivered, a real scanner still is.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from soc_ml.baseline.profile import EnvironmentProfile
@@ -24,7 +24,7 @@ from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.training.trainer import train_bundle
 from soc_ml.usecases import BotDetection, WebRecon, dependency_order
 
-T0 = datetime(2026, 7, 21, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 21, 8, 0, 0, tzinfo=UTC)
 
 GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 GOOGLEBOT_IP = "66.249.66.1"  # inside Google's published crawl range

@@ -130,12 +130,12 @@ class FeatureGroup(Plugin):
     depends_on: ClassVar[tuple[str, ...]] = ()
 
     @abc.abstractmethod
-    def update(self, event: Event, state: "StateStore") -> None:
+    def update(self, event: Event, state: StateStore) -> None:
         """Fold one event into the running state."""
 
     @abc.abstractmethod
     def compute(
-        self, entity: EntityKey, window: str, state: "StateStore"
+        self, entity: EntityKey, window: str, state: StateStore
     ) -> dict[str, float]:
         """Produce this group's features for an entity/window."""
 

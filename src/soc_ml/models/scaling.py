@@ -22,7 +22,7 @@ class FeatureScaler:
         self._mean: list[float] = []
         self._std: list[float] = []
 
-    def fit(self, rows: list[dict[str, float]]) -> "FeatureScaler":
+    def fit(self, rows: list[dict[str, float]]) -> FeatureScaler:
         import numpy as np
 
         if not rows:
@@ -51,7 +51,7 @@ class FeatureScaler:
         return {"features": self.features, "mean": self._mean, "std": self._std}
 
     @classmethod
-    def from_dict(cls, doc: dict) -> "FeatureScaler":
+    def from_dict(cls, doc: dict) -> FeatureScaler:
         scaler = cls()
         scaler.features = list(doc["features"])
         scaler._mean = [float(v) for v in doc["mean"]]

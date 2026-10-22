@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +69,7 @@ def train_bundle(
     features), so on a multi-million-event file it is minutes of work — progress
     output is the difference between "working" and "looks hung".
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     version = version or ("v" + now.strftime("%Y%m%dT%H%M%S"))
     slug = usecase_cls.name
 

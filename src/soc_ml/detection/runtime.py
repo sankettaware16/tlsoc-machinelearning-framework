@@ -44,31 +44,32 @@ import os
 import random
 import signal
 import time
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import soc_ml.models  # noqa: F401 — register model plugins
+import soc_ml.usecases  # noqa: F401 — register use-case plugins
 from soc_ml.alerting.file_sink import FileSink
 from soc_ml.core.plugins import (
     Sink,
     UseCase,
-    registry as plugin_registry,
     usecase_model_factories,
+)
+from soc_ml.core.plugins import (
+    registry as plugin_registry,
 )
 from soc_ml.detection.annotations import EntityAnnotations
 from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
 from soc_ml.drift.psi import DriftReport, population_stability_index
-from soc_ml.fusion.progressive import Progression
 from soc_ml.features.window_features import WindowFeatureBuilder
+from soc_ml.fusion.progressive import Progression
 from soc_ml.ingest.file import FileSource
 from soc_ml.registry.store import ModelBundle, ModelRegistry
 from soc_ml.training.trainer import TrainingError, train_bundle
 from soc_ml.usecases import dependency_order
-
-import soc_ml.models  # noqa: F401 — register model plugins
-import soc_ml.usecases  # noqa: F401 — register use-case plugins
 
 __all__ = ["DetectionRuntime", "RuntimeConfig"]
 
@@ -125,7 +126,7 @@ class RuntimeConfig:
     @property
     def tz(self) -> tzinfo:
         if self.timezone_name == "local":
-            return datetime.now().astimezone().tzinfo or timezone.utc
+            return datetime.now().astimezone().tzinfo or UTC
         return ZoneInfo(self.timezone_name)
 
     @property
@@ -715,7 +716,7 @@ class DetectionRuntime:
         uptime = time.monotonic() - self._started
         for runner in self.runners:
             health = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "usecase": runner.slug,
                 "mode": runner.mode,
                 "bundle_version": runner.bundle.version if runner.bundle else None,

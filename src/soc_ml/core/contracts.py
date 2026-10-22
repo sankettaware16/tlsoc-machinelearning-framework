@@ -72,7 +72,7 @@ class Severity(str, Enum):
     CRITICAL = "critical"  # >= 90
 
     @classmethod
-    def from_score(cls, score: float) -> "Severity":
+    def from_score(cls, score: float) -> Severity:
         if score >= 90:
             return cls.CRITICAL
         if score >= 70:
@@ -170,7 +170,7 @@ class Event:
         return hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
 
     @property
-    def entity(self) -> "EntityKey":
+    def entity(self) -> EntityKey:
         """The reconstructed actor (SPEC_DIGEST §3).
 
         Logs carry no usernames, so identity is ``(server, ip, ua_hash)``. This
@@ -189,7 +189,7 @@ class Event:
         return self.source_ip is not None and self.geo_country_iso is None
 
     @classmethod
-    def from_ecs(cls, doc: dict[str, Any]) -> "Event":
+    def from_ecs(cls, doc: dict[str, Any]) -> Event:
         """Build an Event from one parsed ECS JSON document.
 
         This is the single place the wire format is interpreted, so quirks live

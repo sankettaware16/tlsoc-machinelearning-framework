@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -17,13 +18,13 @@ FACTORIES = {"isolation_forest": IsolationForestModel}
 def make_bundle(version: str) -> ModelBundle:
     profile = EnvironmentProfile()
     for i in range(60):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from soc_ml.core.contracts import Event, Observer
 
         profile.observe(
             Event(
-                timestamp=datetime(2026, 7, 9, tzinfo=timezone.utc),
+                timestamp=datetime(2026, 7, 9, tzinfo=UTC),
                 observer=Observer(server="web01"),
                 source_ip="10.0.0.1",
                 url_path=f"/p{i % 5}",

@@ -38,7 +38,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -98,7 +98,7 @@ class ModelBundle:
         )
 
     @classmethod
-    def load(cls, bundle_dir: Path, model_factories: dict[str, type]) -> "ModelBundle":
+    def load(cls, bundle_dir: Path, model_factories: dict[str, type]) -> ModelBundle:
         """Load a bundle. ``model_factories`` maps slug -> Model class."""
         metadata = json.loads((bundle_dir / "metadata.json").read_text())
         profile = EnvironmentProfile.load(bundle_dir / "profile.json")
@@ -147,7 +147,7 @@ class ModelRegistry:
 
     @staticmethod
     def new_version(now: datetime | None = None) -> str:
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         return "v" + now.strftime("%Y%m%dT%H%M%S")
 
     def save_bundle(self, bundle: ModelBundle) -> Path:
@@ -217,7 +217,7 @@ class ModelRegistry:
         if version != current:
             gate = self._promotion_gate(usecase, version, current, force_reason)
             self.update_metadata(usecase, version, promotion={
-                **gate, "at": datetime.now(timezone.utc).isoformat(), "displaced": current,
+                **gate, "at": datetime.now(UTC).isoformat(), "displaced": current,
             }, rollback_target=current)
         self._write_pointer(usecase, "current", version)
         cand = self._pointer(usecase, "candidate")

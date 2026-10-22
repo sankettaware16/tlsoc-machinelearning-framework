@@ -2,7 +2,7 @@
 
 from .budget import AlertBudget, BudgetDecision
 from .dedup import AlertDeduplicator, DedupDecision
-from .scorer import ScoreResult, Scorer
+from .scorer import Scorer, ScoreResult
 
 __all__ = ["Scorer", "ScoreResult", "AlertDeduplicator", "DedupDecision",
            "AlertBudget", "BudgetDecision"]
