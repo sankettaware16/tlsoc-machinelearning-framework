@@ -36,7 +36,7 @@ data thresholds (FR-62): nothing here is compared against a learned quantity.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 
 from soc_ml.core.contracts import Alert, Severity
 
@@ -77,7 +77,9 @@ class _Episode:
 
 
 class Progression:
-    def __init__(self) -> None:
+    def __init__(self, tz: tzinfo | None = None) -> None:
+        #: "Once per address per day" uses the deployment's day (see AlertBudget).
+        self.tz = tz
         self._episodes: dict[tuple[str, str], _Episode] = {}
         # (server, ip) -> (event-time day, delivered alert id)
         self._queued: dict[tuple[str, str], tuple[str, str]] = {}
@@ -90,7 +92,7 @@ class Progression:
         stage and ``links["progressive"]`` records why (FR-36).
         """
         now = alert.timestamp
-        day = now.date().isoformat()
+        day = (now.astimezone(self.tz) if self.tz else now).date().isoformat()
         self._evict(now, day)
         key = (alert.entity.server, alert.entity.ip)
 

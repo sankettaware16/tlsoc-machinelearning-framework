@@ -15,6 +15,8 @@ it behaves identically in backtest and live.
 
 from __future__ import annotations
 
+from datetime import tzinfo
+
 from soc_ml.core.contracts import Alert
 
 __all__ = ["AlertBudget", "BudgetDecision"]
@@ -28,13 +30,18 @@ class BudgetDecision:
 class AlertBudget:
     """Per-(server, date) delivery cap. Overflow is digested, not dropped."""
 
-    def __init__(self, daily_budget: int) -> None:
+    def __init__(self, daily_budget: int, tz: tzinfo | None = None) -> None:
         self.daily_budget = daily_budget
+        #: The deployment's day: a SOC in IST should not have its daily promise
+        #: reset at 05:30 local (elkcc 2026-10-21: the UTC day's three
+        #: deliveries were spent by the first window after midnight UTC).
+        self.tz = tz
         self._counts: dict[tuple[str, str], int] = {}
         self.stats = {"delivered": 0, "digested": 0}
 
     def decide(self, alert: Alert) -> str:
-        day = alert.timestamp.date().isoformat()
+        ts = alert.timestamp.astimezone(self.tz) if self.tz else alert.timestamp
+        day = ts.date().isoformat()
         key = (alert.entity.server, day)
         # Bound memory: once a new day appears, older day-keys are dead weight.
         if len(self._counts) > 4096:

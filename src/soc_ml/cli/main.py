@@ -526,13 +526,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     slugs = tuple(
         s.strip().replace("-", "_") for s in args.uc.split(",") if s.strip()
     )
+    try:
+        cfg = load_config(args.config)
+    except Exception:
+        cfg = None
     input_dir = args.input
-    if input_dir is None:
-        try:
-            cfg = load_config(args.config)
-            input_dir = str(cfg.input_dir) if cfg.input_dir else None
-        except Exception:
-            input_dir = None
+    if input_dir is None and cfg is not None:
+        input_dir = str(cfg.input_dir) if cfg.input_dir else None
+    # Per-use-case modes (FR-70): only explicit overrides; everything else
+    # runs in --mode. Keyed by slug or spec ID in the config.
+    modes: dict[str, str] = {}
+    if cfg is not None:
+        for slug in slugs:
+            cls = registry.all("usecase").get(slug)
+            for key in (slug, getattr(cls, "usecase_id", None)):
+                uc = cfg.usecases.get(key) if key else None
+                if uc is not None and uc.mode is not None:
+                    modes[slug] = uc.mode.value
+    tz_name = args.timezone or ((cfg.raw.get("timezone") if cfg is not None else None)
+                                or "local")
     if not input_dir:
         print("[ERROR] no input: pass --input <dir> or set input_dir in config",
               file=sys.stderr)
@@ -547,6 +559,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         allow_cold_start=args.allow_cold_start,
         warmup_events=args.warmup_events,
         daily_alert_budget=args.daily_budget,
+        modes=modes,
+        timezone_name=tz_name,
     )
     try:
         return DetectionRuntime(rc).run()
@@ -700,6 +714,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="max delivered alerts per use case per server per day; "
                          "overflow goes to the visible daily digest, never dropped "
                          "(delivery policy, FR-34; default: each use case's own)")
+    rn.add_argument("--timezone", default=None,
+                    help="the day daily budgets count in: 'local' (host zone), 'UTC' "
+                         "or an IANA name like Asia/Kolkata (default: config "
+                         "'timezone', else local)")
     rn.set_defaults(func=cmd_run)
 
     pr = sub.add_parser("promote", help="promote a candidate model to serving (or rollback)")

@@ -34,6 +34,11 @@ plugin_dir: "plugins"  # drop-in plugins
 # Per-use-case overrides are how staged cold-start is expressed: Tier-1 goes
 # live while Tier-2 keeps observing. See SPEC_DIGEST §8.
 # --------------------------------------------------------------------------- #
+# The day daily alert budgets and once-per-day folds are counted in: "local"
+# (the host's zone), "UTC", or an IANA name such as Asia/Kolkata. Policy — the
+# SOC's working day — not a detection threshold.
+timezone: local
+
 modes:
   default: shadow
   overrides: {}

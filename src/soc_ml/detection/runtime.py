@@ -40,10 +40,13 @@ What it guarantees for production:
 from __future__ import annotations
 
 import json
+import os
+import random
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from soc_ml.alerting.file_sink import FileSink
 from soc_ml.core.plugins import (
@@ -91,6 +94,8 @@ class RuntimeConfig:
         warmup_events: int = 200_000,
         daily_alert_budget: int | None = None,
         sink_name: str = "file",
+        modes: dict[str, str] | None = None,
+        timezone_name: str = "UTC",
     ) -> None:
         self.usecases = (usecases,) if isinstance(usecases, str) else tuple(usecases)
         self.input_dir = Path(input_dir)
@@ -106,6 +111,21 @@ class RuntimeConfig:
         #: None = each use case's own class default (delivery policy, FR-34).
         self.daily_alert_budget = daily_alert_budget
         self.sink_name = sink_name
+        #: Per-use-case run mode (FR-70): staged cold-start runs Tier-1 live
+        #: while another use case still shadows. Missing slugs use ``mode``.
+        self.modes = dict(modes or {})
+        #: "UTC", an IANA name ("Asia/Kolkata") or "local" (the host's zone):
+        #: the day that daily budgets and once-per-day folds are counted in.
+        self.timezone_name = timezone_name
+
+    def mode_for(self, slug: str) -> str:
+        return self.modes.get(slug, self.mode)
+
+    @property
+    def tz(self) -> tzinfo:
+        if self.timezone_name == "local":
+            return datetime.now().astimezone().tzinfo or timezone.utc
+        return ZoneInfo(self.timezone_name)
 
     @property
     def set_key(self) -> str:
@@ -127,21 +147,26 @@ class _UseCaseRunner:
     is keyed by slug.
     """
 
-    def __init__(self, uc_cls: type[UseCase], daily_budget_override: int | None) -> None:
+    def __init__(self, uc_cls: type[UseCase], daily_budget_override: int | None,
+                 mode: str = "shadow", tz: tzinfo | None = None) -> None:
         self.uc_cls = uc_cls
         self.slug = uc_cls.name
+        self.mode = mode
         self.factories = usecase_model_factories(uc_cls)
         self.bundle: ModelBundle | None = None
         self.scorer: Scorer | None = None
         self.builder: WindowFeatureBuilder | None = None
         self.dedup = AlertDeduplicator()
-        self.progression = Progression() if uc_cls.progressive else None
+        self.progression = Progression(tz=tz) if uc_cls.progressive else None
         self.budget = AlertBudget(
             daily_budget_override
             if daily_budget_override is not None
-            else uc_cls.daily_alert_budget
+            else uc_cls.daily_alert_budget,
+            tz=tz,
         )
         self.reservoir: dict[str, list[float]] = {}
+        #: Windows offered to the reservoir since the last drift check.
+        self.reservoir_seen = 0
         self.sink: Sink | None = None
         self.shadow_fh = None
         self.scores_fh = None
@@ -181,10 +206,14 @@ class DetectionRuntime:
                 )
             classes.append(cls)
         # Scoring order is the dependency order: exporters before consumers.
+        tz = config.tz
         self.runners = [
-            _UseCaseRunner(cls, config.daily_alert_budget)
+            _UseCaseRunner(cls, config.daily_alert_budget,
+                           mode=config.mode_for(cls.name), tz=tz)
             for cls in dependency_order(classes)
         ]
+        # Reproducible drift samples (NFR-10).
+        self._rng = random.Random(7)
         self.registry = ModelRegistry(config.data_dir)
         self.state_dir = config.data_dir / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +241,9 @@ class DetectionRuntime:
     def run(self) -> int:
         self._install_signals()
         order = ", ".join(r.slug for r in self.runners)
-        self.log(f"[runtime] use cases {order} (dependency order), mode={self.cfg.mode}")
+        modes = ", ".join(f"{r.slug}={r.mode}" for r in self.runners)
+        self.log(f"[runtime] use cases {order} (dependency order), modes: {modes}, "
+                 f"day: {self.cfg.timezone_name}")
 
         if not self._load_or_bootstrap():
             return 2  # explained inside
@@ -224,8 +255,8 @@ class DetectionRuntime:
         )
         self._restore_checkpoint(source)
         self._source = source
-        if self.cfg.mode == "live":
-            for runner in self.runners:
+        for runner in self.runners:
+            if runner.mode == "live":
                 self._open_sink(runner)
 
         self._last_ckpt = self._last_health = self._last_drift = time.monotonic()
@@ -355,7 +386,7 @@ class DetectionRuntime:
             self.stats["windows"] += 1
             self._collect_drift(runner, outcome)
 
-            if self.cfg.mode == "live":
+            if runner.mode == "live":
                 if outcome.fired and outcome.alert is not None:
                     # The delivery decision is recorded even when it removes
                     # the alert. D-023: a delivery modification that cannot be
@@ -481,12 +512,23 @@ class DetectionRuntime:
     # ------------------------------------------------------------------ #
 
     def _collect_drift(self, runner: _UseCaseRunner, outcome) -> None:
-        # Reservoir the model-input features of each scored window; PSI later
-        # compares these live values against the bundle's training reference.
+        # A uniform sample of the model-input features of every window scored
+        # since the last check (Vitter's algorithm R); PSI compares it against
+        # the bundle's training reference. Filling to the cap and stopping
+        # sampled only the first ~2,000 windows after each check — on elkcc
+        # under two minutes of a ~3,500-window bucket, labelled as the hour.
+        runner.reservoir_seen += 1
+        slot = None
+        if runner.reservoir_seen > _DRIFT_RESERVOIR:
+            slot = self._rng.randrange(runner.reservoir_seen)
+            if slot >= _DRIFT_RESERVOIR:
+                return
         for feature, value in outcome.features.items():
             bucket = runner.reservoir.setdefault(feature, [])
-            if len(bucket) < _DRIFT_RESERVOIR:
+            if slot is None or slot >= len(bucket):
                 bucket.append(value)
+            else:
+                bucket[slot] = value
 
     def _check_drift(self) -> None:
         for runner in self.runners:
@@ -511,10 +553,10 @@ class DetectionRuntime:
                     f"— retrain recommended: `soc-ml train --uc {runner.slug} "
                     f"--input <recent logs>`"
                 )
-            # Reservoir rolls forward: keep the second half so the next window
-            # measures against fresher live data.
-            for feature, bucket in runner.reservoir.items():
-                del bucket[: len(bucket) // 2]
+        # Each check judges its own period: start a fresh sample.
+        for runner in self.runners:
+            runner.reservoir.clear()
+            runner.reservoir_seen = 0
 
     # ------------------------------------------------------------------ #
     # Persistence / health
@@ -569,7 +611,12 @@ class DetectionRuntime:
             for runner in self.runners
         }
         tmp = self._ckpt_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(doc))
+            fh.flush()
+            # Durable, not only atomic: a rename that outlives a power cut
+            # must not point at a file whose bytes never reached the disk.
+            os.fsync(fh.fileno())
         tmp.replace(self._ckpt_path())
 
     def _flush_outputs(self) -> None:
@@ -595,7 +642,7 @@ class DetectionRuntime:
             health = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "usecase": runner.slug,
-                "mode": self.cfg.mode,
+                "mode": runner.mode,
                 "bundle_version": runner.bundle.version if runner.bundle else None,
                 "uptime_s": round(uptime, 1),
                 "eps": round(self.stats["events"] / uptime, 1) if uptime > 0 else 0,
