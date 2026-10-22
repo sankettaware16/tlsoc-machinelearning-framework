@@ -104,6 +104,17 @@ def narrative(
         f"({evidence.get('distinct_paths', '?')} distinct paths, "
         f"{evidence.get('n404', '?')} were 404) in 5 minutes."
     ]
+    findings = evidence.get("source_findings") or []
+    if findings:
+        shown = ", ".join(
+            f"{f['path']} ({f['status']}"
+            + (f", {f['bytes']:,} bytes)" if f.get("bytes") is not None else ")")
+            for f in findings[:3])
+        more = f" and {len(findings) - 3} more" if len(findings) > 3 else ""
+        parts.append(
+            f"It got a successful response for a file type this site never serves: "
+            f"{shown}{more}."
+        )
     rotation = evidence.get("source_ua_count") or 0
     if rotation > 1:
         parts.append(

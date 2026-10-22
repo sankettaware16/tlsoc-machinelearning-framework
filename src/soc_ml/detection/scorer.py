@@ -205,7 +205,10 @@ class Scorer:
         fused: float,
         synthetic: bool,
     ) -> Alert:
-        score_0_100, band = severity_score(fused)
+        findings = result.evidence.get("source_findings") or []
+        # Spec §7 context band, "transition-to-success": the scan got a
+        # never-served file type back (D-034).
+        score_0_100, band = severity_score(fused, context_band=10 if findings else 0)
         top = top_features(x, self.bundle.profile, self.slug)
         entity = result.vector.entity
         return Alert(
@@ -238,6 +241,7 @@ class Scorer:
                     if "source_ua_count" in result.evidence
                     else {}
                 ),
+                **({"findings": findings} if findings else {}),
                 # The upstream annotation snapshot the delivery decision saw —
                 # audit context for suppress/downweight (NFR-09).
                 **(

@@ -384,7 +384,8 @@ class DetectionRuntime:
             #     address has persisted; only a sustained episode is queued,
             #     once per address per day. Below that: a visible candidate.
             step = runner.progression.decide(outcome.alert)
-            detail = {"stage": step.stage.value, "episode_windows": step.episode_windows}
+            detail = {"stage": step.stage.value, "episode_windows": step.episode_windows,
+                      **({"escalated_by": "finding"} if step.escalated else {})}
             if step.action == "fold":
                 runner.stats["alerts_folded"] += 1
                 self.stats["alerts_folded"] += 1
