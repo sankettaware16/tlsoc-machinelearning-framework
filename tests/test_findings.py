@@ -24,11 +24,11 @@ from tests.test_progressive import _benign, _fire, _rows, _run
 
 
 def _ev(path: str, status: int = 200, ip: str = "203.0.113.9", ua: str = "probe/1.0",
-        seconds: float = 0) -> Event:
+        seconds: float = 0, size: int = 4039) -> Event:
     return Event(timestamp=T0 + timedelta(hours=2, seconds=seconds),
                  observer=Observer(server="web01"), source_ip=ip, geo_country_iso="ZZ",
                  url_path=path, status_code=status, http_referrer=None,
-                 user_agent=ua, body_bytes=4039, original=f"GET {path} {status}")
+                 user_agent=ua, body_bytes=size, original=f"GET {path} {status}")
 
 
 def _profile(extra: list[Event] = ()) -> EnvironmentProfile:
@@ -165,3 +165,25 @@ def test_a_path_scanners_always_probe_is_still_a_finding_the_day_it_succeeds() -
     ev = _evidence(p, [_ev(f"/probe{i}.php", 404, seconds=i) for i in range(4)]
                    + [_ev("/.env", 200, seconds=5)])
     assert ev[0]["source_findings"][0]["path"] == "/.env"
+
+
+def _sized(path: str, size: int, seconds: float) -> Event:
+    return _ev(path, 200, seconds=seconds, size=size)
+
+
+def test_a_catch_all_page_is_not_a_finding() -> None:
+    """elkcc 2026-10-22: webmail answered 123 different probes (/secrets.env,
+    /terraform.tfstate, /proc/self/environ ...) with the same 2,848-byte page,
+    and a medical-school vhost answered six /.env variants with 431 bytes."""
+    probes = ["/secrets.env", "/terraform.tfstate", "/.env", "/.git-credentials"]
+    ev = _evidence(_profile(), [_ev("/x.php", 404, seconds=0)]
+                   + [_sized(p, 2848, seconds=i + 1) for i, p in enumerate(probes)])
+    assert ev[0]["source_findings"] == []
+
+
+def test_a_real_file_among_catch_all_answers_is_still_found() -> None:
+    ev = _evidence(_profile(), [_ev("/x.php", 404, seconds=0),
+                                _sized("/secrets.env", 2848, 1),
+                                _sized("/.git-credentials", 2848, 2),
+                                _sized("/.env", 913, 3)])
+    assert [f["path"] for f in ev[0]["source_findings"]] == ["/.env"]
