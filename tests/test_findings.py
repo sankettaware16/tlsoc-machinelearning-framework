@@ -62,7 +62,7 @@ def test_profile_learns_served_hidden_segments_and_round_trips(tmp_path: Path) -
     p = _profile(known)
     assert ".well-known" in p.served_types("web01")
     assert "html" in p.served_types("web01") and ".env" not in p.served_types("web01")
-    assert p.path_seen("web01", "/page0.html") and not p.path_seen("web01", "/.env")
+    assert p.path_served("web01", "/page0.html") and not p.path_served("web01", "/.env")
     p.save(tmp_path / "p.json")
     assert ".well-known" in EnvironmentProfile.load(tmp_path / "p.json").served_types("web01")
 
@@ -154,3 +154,14 @@ def test_the_narrative_names_what_was_found() -> None:
         "event_count": 9, "distinct_paths": 9, "n404": 8,
         "source_findings": [{"path": "/web.config", "status": 200, "bytes": 4039}]}, [])
     assert "a file type this site never serves: /web.config (200, 4,039 bytes)." in text
+
+
+def test_a_path_scanners_always_probe_is_still_a_finding_the_day_it_succeeds() -> None:
+    """The case the rule exists for: /.env is requested all day and 404s, then
+    one day it returns 200. "Requested before" must not mean "served before"."""
+    probed = [_ev("/.env", 404, ip=f"198.18.0.{i}", seconds=i) for i in range(50)]
+    p = _profile(probed)
+    assert not p.path_served("web01", "/.env")
+    ev = _evidence(p, [_ev(f"/probe{i}.php", 404, seconds=i) for i in range(4)]
+                   + [_ev("/.env", 200, seconds=5)])
+    assert ev[0]["source_findings"][0]["path"] == "/.env"
