@@ -61,6 +61,9 @@ class EnvironmentProfile:
         self._ext_2xx: dict[str, Counter] = {}
         # server -> Counter(hidden segment -> 2xx occurrences), e.g. ".well-known"
         self._hidden_2xx: dict[str, Counter] = {}
+        # server -> Counter(path -> 2xx occurrences): what was actually served.
+        # Not path_df: scanners *request* /.env all day and get 404s.
+        self._path_ok: dict[str, Counter] = {}
         # usecase -> feature -> {"p50": .., "p99": ..}
         self.feature_stats: dict[str, dict[str, dict[str, float]]] = {}
         self.meta: dict[str, object] = {"events_observed": 0}
@@ -80,6 +83,9 @@ class EnvironmentProfile:
             self._path_total[server] = self._path_total.get(server, 0) + 1
 
             if event.status_code and 200 <= event.status_code < 300:
+                ok = self._path_ok.setdefault(server, Counter())
+                if event.url_path in ok or len(ok) < _MAX_PATHS_PER_SERVER:
+                    ok[event.url_path] += 1
                 ext = _extension(event.url_path)
                 if ext:
                     self._ext_2xx.setdefault(server, Counter())[ext] += 1
@@ -131,16 +137,21 @@ class EnvironmentProfile:
         """File types this server serves: extensions plus hidden segments.
 
         A profile saved before hidden segments were learned knows none, so
-        every hidden segment reads as unserved; ``path_seen`` still clears
-        any exact path the server was seen serving.
+        every hidden segment reads as unserved.
         """
         hidden = self._hidden_2xx.get(server, Counter())
         return self.served_extensions(server) | frozenset(
             h for h, c in hidden.items() if c >= _SERVED_MIN_COUNT)
 
-    def path_seen(self, server: str, path: str | None) -> bool:
-        """Was this exact path requested on this server during training?"""
-        return bool(path) and self._path_df.get(server, Counter()).get(path, 0) > 0
+    def path_served(self, server: str, path: str | None) -> bool:
+        """Did this server answer this exact path with a 2xx during training?
+
+        *Served*, not requested: the paths scanners probe hardest (``/.env``)
+        are in every request table, so "requested before" would whitelist the
+        very file whose first success matters most. A profile saved before
+        this table existed knows no served paths.
+        """
+        return bool(path) and self._path_ok.get(server, Counter()).get(path, 0) > 0
 
     def population(self, usecase: str, feature: str) -> dict[str, float]:
         """Population stats for one feature — p50/p99 context for explanations."""
@@ -176,6 +187,7 @@ class EnvironmentProfile:
             "ua_total": self._ua_total,
             "ext_2xx": {s: dict(c) for s, c in self._ext_2xx.items()},
             "hidden_2xx": {s: dict(c) for s, c in self._hidden_2xx.items()},
+            "path_ok": {s: dict(c) for s, c in self._path_ok.items()},
             "feature_stats": self.feature_stats,
         }
         path.write_text(json.dumps(doc), encoding="utf-8")
@@ -191,6 +203,7 @@ class EnvironmentProfile:
         profile._ua_total = {s: int(v) for s, v in doc.get("ua_total", {}).items()}
         profile._ext_2xx = {s: Counter(c) for s, c in doc.get("ext_2xx", {}).items()}
         profile._hidden_2xx = {s: Counter(c) for s, c in doc.get("hidden_2xx", {}).items()}
+        profile._path_ok = {s: Counter(c) for s, c in doc.get("path_ok", {}).items()}
         profile.feature_stats = doc.get("feature_stats", {})
         return profile
 

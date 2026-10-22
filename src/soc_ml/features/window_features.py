@@ -255,7 +255,7 @@ class WindowFeatureBuilder:
         served = self._served_types.get(server)
         if served is None:
             served = self._served_types[server] = self.profile.served_types(server)
-        return kind not in served and not self.profile.path_seen(server, event.url_path)
+        return kind not in served and not self.profile.path_served(server, event.url_path)
 
     def _source_for(self, entity: EntityKey, bucket: int) -> _SourceAgg:
         key = (entity.server, entity.ip, bucket)
