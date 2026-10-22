@@ -10,6 +10,70 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-22 — A scan that finds something; a real git dump, missed twice
+
+### D-034 · Escalate a success on a never-served file type — and the attack that proved why
+
+**Correction to D-033 first.** D-033 said the nine captured scanners "found
+nothing": every sensitive probe 404'd and their successes were public pages.
+That was read off a top-15 listing that cut one line: **six of the nine got
+HTTP 200 for `/web.config` from www.iitb.ac.in** (4,039 bytes each — most
+likely Drupal's stock IIS file, still a posture issue for the web team).
+
+**Decision.** A *finding* is a 2xx on a file type the server never serves, at a
+path it was never seen *serving* — both learned. The profile now also learns
+served hidden segments (`/.env`, `/.git/HEAD` have no extension; `.well-known`
+is served and stays quiet) and served paths (`path_ok`, 2xx only: scanners
+*request* `/.env` all day, so "requested before" would whitelist the one file
+whose first success matters). Findings are kept per address and bucket so
+user-agent rotation cannot split them off. A fired window with a finding gets
+the spec's context band (+10, "transition-to-success") and is queued at once
+with no progressive ceiling, once per address per day.
+
+**A catch-all page is not a file.** The first replay escalated two scanners:
+webmail.iitb.ac.in answered 123 probes (`/secrets.env`, `/terraform.tfstate`,
+`/proc/self/environ` …) with the same 2,848 bytes, and www.medic.iitb.ac.in
+answered six `/.env*` variants with 431. A size shared by two never-served
+paths in one address-bucket is the site's answer to everything (soft 404);
+those are dropped. Both escalations disappeared; real files keep their own
+sizes.
+
+**Measured, serving bundle, live traffic.** Implemented rule: 600k events → 0
+escalations; the next 269k → **1**. The reviewer's broader wording (any 2xx on
+a never-requested path, IDF ≈ 1.0) → 11, nearly all new news images and JS
+chunks. The narrow rule stays.
+
+**The one it caught.** `143.198.179.38` (DigitalOcean) downloaded
+`gymkhana.iitb.ac.in/~hostel5/.git/` on 2026-10-22 between 20:45 and 20:49 IST:
+7,208 requests, 6,554 successes at 3,192 distinct sizes, **6,519 git objects,
+the index and config** — a completed git-dumper run; `HEAD` was 21 bytes,
+`ref: refs/heads/main`. The same address made the same 7,208 requests on
+**2026-10-21 at 05:35 IST**. The framework fired both times and delivered
+neither:
+
+| | fired | delivered? | why not |
+|---|---|---|---|
+| 10-21 05:35 IST | critical | no | the UTC day's 3 deliveries went to the first window after 00:00 UTC |
+| 10-22 20:45 IST | yes | no | one burst → progressive "low" candidate (D-033's stated price) |
+
+Replayed through the serving bundle with this rule: **escalated**. Deployed
+2026-10-22 20:55 IST, ahead of the remaining fixes, because the attacker had
+already returned once. The raw events are kept as
+`data/incidents/web_recon/2026-10-22-git-dump-gymkhana-hostel5.ndjson` — the
+approval gate now replays them for every web_recon candidate. Operator action
+raised the same evening: deny `/.git` on that vhost; treat the repository's
+history as disclosed and rotate anything secret in it.
+
+**Rules out.** "A burst that found nothing" as a safe description of any burst;
+judging success by status code alone; a daily cap that is spent by midnight.
+
+**Lives in.** `baseline/profile.py` (`served_types`, `path_served`,
+`file_type`), `features/window_features.py` (`_is_finding`, catch-all filter),
+`detection/scorer.py` (context band, `links.findings`), `fusion/progressive.py`
+(escalation), `explain/context.py`, `tests/test_findings.py`.
+
+---
+
 ## 2026-10-22 — The 7-day measurement, and the first fusion stage it called for
 
 ### D-033 · Progressive alerting: lone weak signals stay low, sustained scanners reach the queue
