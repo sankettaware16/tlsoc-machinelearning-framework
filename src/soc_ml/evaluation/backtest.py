@@ -29,6 +29,7 @@ from soc_ml.core.plugins import (
 )
 from soc_ml.core.contracts import Event
 from soc_ml.detection.dedup import AlertDeduplicator
+from soc_ml.fusion.progressive import Progression
 from soc_ml.detection.scorer import Scorer
 from soc_ml.evaluation.canary import is_canary_ip
 from soc_ml.features.window_features import WindowFeatureBuilder
@@ -125,6 +126,7 @@ def run_backtest(
     scorer = Scorer(uc_cls, bundle, EntityAnnotations())
     builder = WindowFeatureBuilder(bundle.profile)
     dedup = AlertDeduplicator()
+    progression = Progression() if uc_cls.progressive else None
 
     reports_dir = out_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +142,7 @@ def run_backtest(
         canary = uc_cls.canary(server, cutoff + timedelta(seconds=60))
 
     scored = alerts_delivered = alerts_raw = alerts_suppressed = 0
+    candidates = canary_delivered = 0
     canary_windows = canary_fired = 0
     top_alerts: list[tuple[float, dict[str, Any]]] = []
 
@@ -152,7 +155,7 @@ def run_backtest(
 
     def handle(outcome, is_canary: bool) -> None:
         nonlocal scored, alerts_delivered, alerts_raw, alerts_suppressed
-        nonlocal canary_windows, canary_fired
+        nonlocal canary_windows, canary_fired, candidates, canary_delivered
         if outcome is None:
             return
         scored += 1
@@ -167,9 +170,16 @@ def run_backtest(
             # the before/after suppression measure in one report.
             alerts_suppressed += 1
             return
-        decision = dedup.decide(outcome.alert)
-        if decision.deliver:
+        # Same delivery decision as the live runtime (FR-72).
+        if progression is not None:
+            step = progression.decide(outcome.alert)
+            candidates += int(step.action == "candidate")
+            deliver = step.action == "deliver"
+        else:
+            deliver = dedup.decide(outcome.alert).deliver
+        if deliver:
             alerts_delivered += 1
+            canary_delivered += int(is_canary)
             alert_sink.emit_alert(outcome.alert)
             if not is_canary:
                 top_alerts.append(
@@ -213,10 +223,11 @@ def run_backtest(
             "alerts_raw": alerts_raw,
             "alerts_delivered": alerts_delivered,
             "alerts_suppressed": alerts_suppressed,
-            "folded": dedup.stats["folded"],
+            "folded": (progression.stats["folded"] if progression is not None
+                       else dedup.stats["folded"]),
+            "candidates": candidates,
             "delivered_per_day_per_server": round(
-                (alerts_delivered - canary_delivered(dedup, canary_fired))
-                / score_days / n_servers, 2
+                (alerts_delivered - canary_delivered) / score_days / n_servers, 2
             ),
             "fp_budget_per_day_per_server": 3,
         },
@@ -237,8 +248,3 @@ def run_backtest(
         json.dumps(report, indent=2), encoding="utf-8"
     )
     return report
-
-
-def canary_delivered(dedup: AlertDeduplicator, canary_fired: int) -> int:
-    """At most one delivered alert belongs to the canary entity."""
-    return 1 if canary_fired else 0

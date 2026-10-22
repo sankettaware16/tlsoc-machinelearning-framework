@@ -260,6 +260,11 @@ class UseCase(Plugin):
     #: that is not deployed is skipped, never fatal — the consumer must treat
     #: the missing signal as "unknown", visibly (NFR-09).
     depends_on: ClassVar[tuple[str, ...]] = ()
+    #: Deliver through progressive alerting (fusion/progressive.py): severity
+    #: capped by how long the address has persisted, queue only when sustained.
+    #: The spec asks this of UC-02; detectors whose gate already demands
+    #: persistence (UC-04: sustained 30 min) leave it off.
+    progressive: ClassVar[bool] = False
 
     @classmethod
     def canary(cls, server: str, start: datetime) -> list[Event]:
