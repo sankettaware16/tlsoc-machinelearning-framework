@@ -506,10 +506,16 @@ def cmd_train(args: argparse.Namespace) -> int:
     print(f"servers       : {len(bundle.profile.servers())}")
     print(f"bundle        : {registry.bundle_dir(slug, bundle.version)}")
 
+    promoted = False
     if args.promote:
-        registry.promote(slug, bundle.version)
-        print(f"\npromoted {bundle.version} to CURRENT (serving)")
-    else:
+        from soc_ml.registry.store import PromotionRefused
+        try:
+            registry.promote(slug, bundle.version)
+            promoted = True
+            print(f"\npromoted {bundle.version} to CURRENT (serving)")
+        except PromotionRefused as exc:
+            print(f"\n[not promoted] {exc}")
+    if not promoted:
         registry.set_candidate(slug, bundle.version)
         current = registry.current_version(slug)
         print(f"\nregistered as CANDIDATE (current serving: {current or 'none'})")
@@ -580,8 +586,18 @@ def cmd_promote(args: argparse.Namespace) -> int:
             target = registry.rollback(slug)
             print(f"rolled back {slug} -> {target}")
         else:
-            target = registry.promote(slug, args.version)
+            if args.force and not (args.reason or "").strip():
+                print("[ERROR] --force needs --reason \"<why>\"; it is written into the "
+                      "bundle's metadata", file=sys.stderr)
+                return 1
+            target = registry.promote(slug, args.version,
+                                      force_reason=args.reason if args.force else None)
             print(f"promoted {slug} -> {target} (now serving)")
+            gate = (registry.metadata(slug, target) or {}).get("promotion") or {}
+            if gate.get("gate"):
+                print(f"gate: {gate['gate']}"
+                      + (f" ({gate.get('verdict')})" if gate.get("verdict") else "")
+                      + (f" — reason: {gate['reason']}" if gate.get("reason") else ""))
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
@@ -724,6 +740,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--uc", default="web_recon", help="use case slug")
     pr.add_argument("--version", help="specific version (default: the current candidate)")
     pr.add_argument("--rollback", action="store_true", help="roll back to the previous version")
+    pr.add_argument("--force", action="store_true",
+                    help="promote without a passing approval check (needs --reason)")
+    pr.add_argument("--reason", default=None,
+                    help="why the approval check is being overridden (recorded)")
     pr.add_argument("--out", default="data", help="registry/data root")
     pr.set_defaults(func=cmd_promote)
 

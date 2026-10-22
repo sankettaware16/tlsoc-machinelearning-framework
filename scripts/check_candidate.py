@@ -25,8 +25,11 @@ Answers the two questions that should be asked before clicking Approve:
    bot_detection passed its canary and fired on none of 756 windows of a
    live headless-browser botnet the serving model caught (D-032).
 
-Read-only with respect to the registry and the running detector: it loads
-bundles, scores in memory, and writes nothing.
+It writes one file: the verdict, as ``approval_check.json`` in the candidate's
+bundle directory — the registry refuses to promote without a PASS or WARN
+checked against the bundle serving now (D-035). Nothing else is written, and
+the running detector is untouched. The replay is held in memory: bound it with
+``--limit`` on a busy box.
 
     python3 scripts/check_candidate.py --uc web_recon \
         --input /var/log/soc_output/nginx.json --limit 200000
@@ -34,20 +37,20 @@ bundles, scores in memory, and writes nothing.
 
 from __future__ import annotations
 
-import os
-
-# Same tiny-matrix workload as the CLI, same pin (JOURNAL.md D-026) — this
-# script bypasses cli/main.py, so it must set the defaults itself, before
-# numpy/sklearn load.
-for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_var, "1")
-
 import argparse
 import builtins
 import functools
+import hashlib
+import os
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+# Same tiny-matrix workload as the CLI, same pin (JOURNAL.md D-026) — this
+# script bypasses cli/main.py, so it must set the defaults itself, before
+# numpy/sklearn load. The standard library above loads neither.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -55,6 +58,7 @@ import soc_ml.models  # noqa: F401,E402
 import soc_ml.usecases  # noqa: F401,E402
 from soc_ml.core.plugins import registry as plugin_registry  # noqa: E402
 from soc_ml.core.plugins import usecase_model_factories  # noqa: E402
+from soc_ml.core.provenance import code_commit  # noqa: E402
 from soc_ml.detection.annotations import EntityAnnotations  # noqa: E402
 from soc_ml.detection.scorer import Scorer  # noqa: E402
 from soc_ml.evaluation.canary import is_canary_ip  # noqa: E402
@@ -198,6 +202,7 @@ def main() -> int:
     incidents = [str(p) for p in filed] + list(args.incident)
     blind_to: list[str] = []
     weaker_on: list[str] = []
+    incident_rows: list[dict] = []
     if incidents:
         # Addresses decide the verdict: since D-031 one address is one alert,
         # however many user-agent fragments of it fire. Windows are context.
@@ -218,6 +223,14 @@ def main() -> int:
         n = len(addresses)
         print(f"{Path(path).name:<44}"
               f"{f'{len(s_ips)}/{n} ({sf}/{sw})':>16}{f'{len(c_ips)}/{n} ({cf}/{cw})':>16}")
+        incident_rows.append({
+            "file": Path(path).name,
+            "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+            "addresses": n,
+            "serving_caught": len(s_ips), "candidate_caught": len(c_ips),
+            "serving_windows": [sf, sw], "candidate_windows": [cf, cw],
+            "missed_by_candidate": sorted(s_ips - c_ips)[:20],
+        })
         if s_ips and not c_ips:
             blind_to.append(Path(path).name)
         elif s_ips - c_ips:
@@ -225,32 +238,79 @@ def main() -> int:
                              f"address(es) serving catches")
 
     s, c = results["serving"], results["candidate"]
-    print("\nverdict")
+    notes: list[str] = []
+    verdict = "PASS"
     if c["canary_windows"] and not c["canary_fired"]:
-        print("  DO NOT APPROVE — the candidate misses its own known-bad burst.")
-        print("  Lower volume with no detection is a worse model, not a better one.")
-        return 2
+        verdict = "DO_NOT_APPROVE"
+        notes.append("the candidate misses its own known-bad burst — lower volume "
+                     "with no detection is a worse model, not a better one")
     if blind_to:
-        print("  DO NOT APPROVE — the candidate is blind to a real attack the serving")
-        print(f"  model catches: {', '.join(blind_to)}")
-        return 2
-    for note in weaker_on:
-        print(f"  WARNING: {note}")
-    if c["canary_windows"]:
-        print("  canary caught by the candidate — it can still see a textbook attack")
-    else:
-        print("  no canary windows produced — detection is UNVERIFIED here")
+        verdict = "DO_NOT_APPROVE"
+        notes.append("the candidate is blind to a real attack the serving model "
+                     f"catches: {', '.join(blind_to)}")
+    if verdict == "PASS":
+        for note in weaker_on:
+            verdict = "WARN"
+            notes.append(note)
+        if not c["canary_windows"]:
+            verdict = "WARN"
+            notes.append("no canary windows produced — detection is unverified here")
+        if c["rate_pct"] > s["rate_pct"]:
+            verdict = "WARN"
+            notes.append(f"candidate fires MORE ({c['rate_pct']:.3f}% vs "
+                         f"{s['rate_pct']:.3f}%) — investigate before approving")
+    info: list[str] = []
+    if c["canary_windows"] and c["canary_fired"]:
+        info.append("canary caught by the candidate — it can still see a textbook attack")
     if s["rate_pct"] and c["rate_pct"] < s["rate_pct"]:
         factor = s["rate_pct"] / max(c["rate_pct"], 1e-9)
-        print(f"  fire rate {s['rate_pct']:.3f}% -> {c['rate_pct']:.3f}% "
-              f"({factor:.1f}x fewer)")
-    elif c["rate_pct"] > s["rate_pct"]:
-        print(f"  WARNING: candidate fires MORE ({c['rate_pct']:.3f}% vs "
-              f"{s['rate_pct']:.3f}%) — investigate before approving")
+        info.append(f"fire rate {s['rate_pct']:.3f}% -> {c['rate_pct']:.3f}% "
+                    f"({factor:.1f}x fewer)")
     if design is not None and c["rate_pct"] > design * 3:
-        print(f"  note: still {c['rate_pct'] / design:.1f}x the design rate — "
-              "calibration alone will not reach the alert budget")
-    return 0
+        info.append(f"still {c['rate_pct'] / design:.1f}x the design rate — "
+                    "calibration alone will not reach the alert budget")
+
+    print("\nverdict")
+    label = {"PASS": "PASS", "WARN": "WARN — approvable, read the notes",
+             "DO_NOT_APPROVE": "DO NOT APPROVE"}[verdict]
+    print(f"  {label}")
+    for note in notes:
+        print(f"  - {note}")
+    for line in info:
+        print(f"  {line}")
+
+    # The recorded verdict the registry demands before promotion (FR-55, D-035).
+    digest = hashlib.sha256()
+    for e in stream:
+        digest.update(f"{e.timestamp.isoformat()}|{e.source_ip}|{e.url_path}|"
+                      f"{e.status_code}\n".encode())
+    report = {
+        "verdict": verdict,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "code_commit": code_commit(),
+        "usecase": slug,
+        "serving": serving,
+        "candidate": candidate,
+        "input": {
+            "path": str(args.input), "limit": args.limit, "events": len(stream),
+            "first": stream[0].timestamp.isoformat(),
+            "last": stream[-1].timestamp.isoformat(),
+            "sha256_events": digest.hexdigest(),
+        },
+        "fire_rate": {k: {"windows": results[k]["windows"], "fired": results[k]["fired"],
+                          "rate_pct": round(results[k]["rate_pct"], 4)}
+                      for k in ("serving", "candidate")},
+        "design_rate_pct": design,
+        "canary": {k: {"windows": results[k]["canary_windows"],
+                       "fired": results[k]["canary_fired"]}
+                   for k in ("serving", "candidate")},
+        "incidents": incident_rows,
+        "notes": notes,
+        "info": info,
+    }
+    path = reg.write_approval(slug, candidate, report)
+    print(f"\nrecorded: {path}")
+    return 2 if verdict == "DO_NOT_APPROVE" else 0
 
 
 if __name__ == "__main__":

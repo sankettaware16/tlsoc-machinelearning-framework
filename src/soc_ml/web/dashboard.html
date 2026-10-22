@@ -497,7 +497,16 @@ function renderModels(m){
               v.status === "approved" ? "b-ok" :
               v.status === "pending"  ? "b-warn" : "b-dim"}">${
               v.status === "approved" ? "approved · serving" :
-              v.status === "pending"  ? "pending approval" : "retained"}</span></td>
+              v.status === "pending"  ? "pending approval" : "retained"}</span>${
+              v.approval ? `<br><span class="badge ${
+                v.approval.verdict === "PASS" ? "b-ok" :
+                v.approval.verdict === "WARN" ? "b-warn" : "b-bad"}"
+                title="${esc((v.approval.notes||[]).join("\n") || "approval check")}">check: ${
+                esc(v.approval.verdict === "DO_NOT_APPROVE" ? "do not approve" : v.approval.verdict)}</span>`
+              : v.status !== "approved" ? `<br><span class="badge b-dim">no check</span>` : ""}${
+              v.status === "approved" && v.promotion && v.promotion.gate
+                ? `<br><span class="badge ${v.promotion.gate === "forced" ? "b-bad" : "b-dim"}"
+                    title="${esc(v.promotion.reason || "")}">via ${esc(v.promotion.gate)}</span>` : ""}</td>
             <td>${esc((v.trained_at || "").replace("T"," ").slice(0,16) || "–")}</td>
             <td>${nf(v.train_windows)}<br>
               <span style="color:var(--dim)">${nf(v.train_events)} ev</span></td>
@@ -506,7 +515,14 @@ function renderModels(m){
                 ? `<br><span class="badge b-warn">skipped: ${esc(v.models_skipped.join(", "))}</span>`
                 : ""}</td>
             <td>${v.status === "approved" ? "" :
-              v.feature_code_current === false
+              !v.promotable
+                ? `<button class="act ghost" disabled
+                     title="${esc(v.approval && v.approval.serving_checked !== u.serving
+                       ? "Checked against " + (v.approval.serving_checked || "?")
+                         + ", but " + (u.serving || "none") + " is serving — re-run the check"
+                       : "No passing approval check — run scripts/check_candidate.py on the box")}"
+                     >Approve</button>`
+              : v.feature_code_current === false
                 ? `<button class="act ghost"
                      onclick="approveStale('${esc(u.slug)}','${esc(v.version)}')"
                      title="Built from different feature code">Approve ⚠</button>`
@@ -532,7 +548,9 @@ function renderModels(m){
         <button class="act ghost" ${u.can_rollback ? "" : "disabled"}
           onclick="rollback('${esc(u.slug)}')">Roll back to previous</button>
         <span class="note" style="margin:0">Approving repoints <span class="mono">current</span>;
-          the running detector picks it up on its next restart.</span>
+          the running detector picks it up on its next restart. A version can be approved
+          only with a passing <span class="mono">scripts/check_candidate.py</span> report
+          against the serving model.</span>
       </div>
     </div>`).join("");
 }

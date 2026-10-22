@@ -44,9 +44,17 @@ from typing import Any
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.fusion.calibration import PercentileCalibrator
 
-__all__ = ["ModelBundle", "ModelRegistry"]
+__all__ = ["ModelBundle", "ModelRegistry", "PromotionRefused", "APPROVAL_FILE"]
 
 _HOT_VERSIONS = 3  # keep this many old versions for rollback (spec §14)
+
+#: Written by scripts/check_candidate.py into the candidate's bundle directory.
+APPROVAL_FILE = "approval_check.json"
+_APPROVING = ("PASS", "WARN")
+
+
+class PromotionRefused(ValueError):
+    """A version may not serve without a recorded verdict (FR-55, D-035)."""
 
 
 @dataclass
@@ -176,16 +184,30 @@ class ModelRegistry:
         self._require(usecase, version)
         self._write_pointer(usecase, "candidate", version)
 
-    def promote(self, usecase: str, version: str | None = None) -> str:
+    def promote(self, usecase: str, version: str | None = None, *,
+                force_reason: str | None = None) -> str:
         """Make ``version`` (or the current candidate) the serving bundle.
 
-        Returns the promoted version. Clears the candidate pointer. Prunes old
-        versions but always keeps ``current`` and the last N for rollback.
+        Refused (``PromotionRefused``) unless the version carries an approval
+        report with a PASS or WARN verdict *checked against the bundle serving
+        now* — a candidate that passed its canary was once blind to a live
+        botnet, and only a replay that someone happened to run caught it
+        (D-032). Exceptions, both recorded in the bundle's metadata: nothing is
+        serving yet (bootstrap — nothing to compare against), or an operator
+        ``force_reason``. Records the displaced version as ``rollback_target``.
+        Clears the candidate pointer; prunes old versions but always keeps
+        ``current``, the candidate and the rollback target.
         """
         version = version or self.candidate_version(usecase)
         if not version:
             raise ValueError(f"{usecase}: no version given and no candidate to promote")
         self._require(usecase, version)
+        current = self.current_version(usecase)
+        if version != current:
+            gate = self._promotion_gate(usecase, version, current, force_reason)
+            self.update_metadata(usecase, version, promotion={
+                **gate, "at": datetime.now(timezone.utc).isoformat(), "displaced": current,
+            }, rollback_target=current)
         self._write_pointer(usecase, "current", version)
         cand = self._pointer(usecase, "candidate")
         if cand.exists():
@@ -193,15 +215,78 @@ class ModelRegistry:
         self._prune(usecase)
         return version
 
+    def _promotion_gate(self, usecase: str, version: str, current: str | None,
+                        force_reason: str | None) -> dict[str, Any]:
+        if current is None:
+            return {"gate": "bootstrap"}
+        report = self.approval(usecase, version) or {}
+        verdict = report.get("verdict")
+        if verdict in _APPROVING and report.get("serving") == current:
+            return {"gate": "approval_check", "verdict": verdict,
+                    "checked_at": report.get("generated_at")}
+        if force_reason and force_reason.strip():
+            return {"gate": "forced", "reason": force_reason.strip(), "verdict": verdict}
+        if not report:
+            why = "it has no approval report — run scripts/check_candidate.py"
+        elif verdict not in _APPROVING:
+            why = f"its approval check says {verdict}"
+        else:
+            why = (f"its approval check compared it with {report.get('serving')}, "
+                   f"but {current} is serving now — re-run scripts/check_candidate.py")
+        raise PromotionRefused(
+            f"{usecase}: refusing to promote {version}: {why} "
+            f"(an operator may override with --force --reason)")
+
     def rollback(self, usecase: str) -> str:
-        """Repoint ``current`` to the newest retained version before it."""
+        """Repoint ``current`` to the version it displaced.
+
+        The displaced version is recorded at promotion. "The newest other
+        version" is only a fallback for bundles promoted before that record
+        existed: it can be a never-served candidate.
+        """
         current = self.current_version(usecase)
-        others = [v for v in self.versions(usecase) if v != current]
-        if not others:
-            raise ValueError(f"{usecase}: no earlier version to roll back to")
-        target = others[-1]
+        target = (self.metadata(usecase, current) or {}).get("rollback_target") \
+            if current else None
+        if not target or not self.bundle_dir(usecase, target).is_dir():
+            others = [v for v in self.versions(usecase) if v != current]
+            if not others:
+                raise ValueError(f"{usecase}: no earlier version to roll back to")
+            target = others[-1]
         self._write_pointer(usecase, "current", target)
         return target
+
+    # -- approval + metadata ---------------------------------------------- #
+
+    def approval(self, usecase: str, version: str) -> dict[str, Any] | None:
+        path = self.bundle_dir(usecase, version) / APPROVAL_FILE
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def write_approval(self, usecase: str, version: str, report: dict[str, Any]) -> Path:
+        self._require(usecase, version)
+        path = self.bundle_dir(usecase, version) / APPROVAL_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return path
+
+    def metadata(self, usecase: str, version: str) -> dict[str, Any] | None:
+        try:
+            return json.loads((self.bundle_dir(usecase, version) / "metadata.json")
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def update_metadata(self, usecase: str, version: str, **fields: Any) -> None:
+        """Record lifecycle facts (promotion, rollback target) beside the bundle."""
+        path = self.bundle_dir(usecase, version) / "metadata.json"
+        meta = self.metadata(usecase, version) or {}
+        meta.update(fields)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
     # -- loading ----------------------------------------------------------- #
 
@@ -226,7 +311,10 @@ class ModelRegistry:
             raise ValueError(f"{usecase}: no such version {version!r}")
 
     def _prune(self, usecase: str, keep: int = _HOT_VERSIONS) -> None:
-        protected = {self.current_version(usecase), self.candidate_version(usecase)}
+        current = self.current_version(usecase)
+        protected = {current, self.candidate_version(usecase)}
+        if current:
+            protected.add((self.metadata(usecase, current) or {}).get("rollback_target"))
         protected.discard(None)
         prunable = [v for v in self.versions(usecase) if v not in protected]
         for version in prunable[: max(0, len(prunable) - keep)]:
