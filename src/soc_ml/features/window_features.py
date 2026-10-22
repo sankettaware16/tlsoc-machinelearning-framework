@@ -111,6 +111,10 @@ class _SourceAgg:
     #: Requests that *succeeded* on a file type this server never serves, at
     #: a path it was never seen serving: what a scan found (D-034).
     findings: list = field(default_factory=list)
+    #: body size -> never-served paths answered 2xx with that size. A file has
+    #: its own size; a catch-all page ("soft 404") repeats one size across
+    #: paths — webmail answered 123 probes with the same 2,848 bytes.
+    unserved_ok_sizes: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -203,6 +207,7 @@ class WindowFeatureBuilder:
             source.findings.append({"path": event.url_path,
                                     "status": event.status_code,
                                     "bytes": event.body_bytes})
+        self._note_unserved_success(source, event)
 
         self._since_sweep += 1
         if self._since_sweep >= _SWEEP_EVERY:
@@ -256,6 +261,15 @@ class WindowFeatureBuilder:
         if served is None:
             served = self._served_types[server] = self.profile.served_types(server)
         return kind not in served and not self.profile.path_served(server, event.url_path)
+
+    def _note_unserved_success(self, source: _SourceAgg, event: Event) -> None:
+        status = event.status_code or 0
+        if (not 200 <= status < 300 or event.body_bytes is None or not event.url_path
+                or self.profile.path_served(event.entity.server, event.url_path)):
+            return
+        paths = source.unserved_ok_sizes.setdefault(event.body_bytes, set())
+        if len(paths) < 2:
+            paths.add(event.url_path)
 
     def _source_for(self, entity: EntityKey, bucket: int) -> _SourceAgg:
         key = (entity.server, entity.ip, bucket)
@@ -397,7 +411,13 @@ class WindowFeatureBuilder:
             "source_event_count": source.count,
             "source_ua_count": len(source.ua_hashes),
             "source_distinct_paths": len(source.paths),
-            "source_findings": list(source.findings),
+            # Drop the catch-all page: a size shared by two never-served
+            # paths is the site's answer to everything, not a file (D-034).
+            "source_findings": [
+                f for f in source.findings
+                if f["bytes"] is None
+                or len(source.unserved_ok_sizes.get(f["bytes"], ())) < 2
+            ],
             # Identity context for UC-04's gate and the crawler export —
             # evidence, deliberately never model input (models learn behavior,
             # not IP ranges).
