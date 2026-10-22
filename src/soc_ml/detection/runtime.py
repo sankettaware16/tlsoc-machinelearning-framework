@@ -167,6 +167,14 @@ class _UseCaseRunner:
         self.reservoir: dict[str, list[float]] = {}
         #: Windows offered to the reservoir since the last drift check.
         self.reservoir_seen = 0
+        #: local "YYYY-MM-DDTHH" -> [windows scored, windows fired]; the last
+        #: 48 hours. A percentile gate is meant to fire on a fixed share of
+        #: windows; a frozen calibration drifts off it within hours on this
+        #: feed (advisory review, P1), so the share is watched, per hour.
+        self.hourly: dict[str, list[int]] = {}
+        self.tz = tz
+        gate = getattr(uc_cls, "GATE_PERCENTILE", None)
+        self.design_share_pct = round(100.0 * (1.0 - gate), 4) if gate else None
         self.sink: Sink | None = None
         self.shadow_fh = None
         self.scores_fh = None
@@ -385,6 +393,7 @@ class DetectionRuntime:
             runner.stats["windows"] += 1
             self.stats["windows"] += 1
             self._collect_drift(runner, outcome)
+            self._count_hour(runner, outcome)
 
             if runner.mode == "live":
                 if outcome.fired and outcome.alert is not None:
@@ -530,6 +539,30 @@ class DetectionRuntime:
             else:
                 bucket[slot] = value
 
+    def _count_hour(self, runner: _UseCaseRunner, outcome) -> None:
+        ts = datetime.fromisoformat(outcome.window_end)
+        hour = (ts.astimezone(runner.tz) if runner.tz else ts).strftime("%Y-%m-%dT%H")
+        counts = runner.hourly.get(hour)
+        if counts is None:
+            counts = runner.hourly[hour] = [0, 0]
+            if len(runner.hourly) > 48:
+                del runner.hourly[min(runner.hourly)]
+        counts[0] += 1
+        counts[1] += int(outcome.fired)
+
+    def _hourly_share(self, runner: _UseCaseRunner) -> list[dict]:
+        rows = []
+        for hour in sorted(runner.hourly)[-24:]:
+            windows, fired = runner.hourly[hour]
+            share = 100.0 * fired / windows if windows else 0.0
+            rows.append({
+                "hour": hour, "windows": windows, "fired": fired,
+                "share_pct": round(share, 4),
+                "vs_design": (round(share / runner.design_share_pct, 2)
+                              if runner.design_share_pct else None),
+            })
+        return rows
+
     def _check_drift(self) -> None:
         for runner in self.runners:
             if not runner.bundle or not runner.bundle.reference_sample:
@@ -651,6 +684,8 @@ class DetectionRuntime:
                 "ingest_failed": source.stats.failed,
                 "ingest_skipped_non_request": source.stats.skipped_non_request,
                 "entity_annotations": self.annotations.size,
+                "design_share_pct": runner.design_share_pct,
+                "fire_share_by_hour": self._hourly_share(runner),
                 **runner.stats,
             }
             path = self.state_dir / f"{runner.slug}_health.json"
