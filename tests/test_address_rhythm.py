@@ -149,3 +149,56 @@ def test_the_runtime_keeps_address_memory_across_a_restart(tmp_path: Path) -> No
     logs: list[str] = []
     DetectionRuntime(RuntimeConfig(**cfg), log=logs.append).run()
     assert any("address memory restored" in line for line in logs)
+
+
+# ----------------- review 2026-10-22: C7, C10/C15, S1 ------------------ #
+
+
+def test_a_bucket_cut_short_by_shutdown_is_completed_after_restart() -> None:
+    m = AddressMemory()
+    for b in range(1, 6):
+        m.close_bucket(b, 7)
+    m.close_bucket(6, 3, partial=True)            # shutdown mid-bucket
+    assert m.rate_cv() == 0.0, "a partial bucket is not a cadence sample"
+    assert m.active_ratio(6) == 6 / 12, "but it is activity"
+    m.close_bucket(6, 4)                           # the rest of bucket 6 after restart
+    assert m.recent[-1] == [6, 7] and m.rate_cv() == 0.0
+
+
+def test_flush_marks_its_buckets_partial() -> None:
+    b = WindowFeatureBuilder(trained_profile())
+    _windows(b, [_ev("198.51.100.9", "ua", minute=k * 0.5) for k in range(4)])
+    (memory,) = [m for (s, ip), m in b._addresses.items() if ip == "198.51.100.9"]
+    assert memory.recent[-1][2] == 1
+
+
+def test_a_snapshot_covering_the_replay_is_not_counted_twice() -> None:
+    live = WindowFeatureBuilder(trained_profile())
+    events = [_ev("198.51.100.9", "ua", minute=k * 5.0) for k in range(24)]
+    _windows(live, events)
+    snapshot = json.loads(json.dumps(live.export_address_memory()))
+    before = list(live._addresses[("web01", "198.51.100.9")].hour_counts)
+
+    replay = WindowFeatureBuilder(trained_profile())
+    replay.restore_address_memory(snapshot, history_only=True)
+    _windows(replay, events + [_ev("198.51.100.77", "ua", minute=1.0)])
+    frozen = replay._addresses[("web01", "198.51.100.9")]
+    assert frozen.hour_counts == before, "replayed events are already in the snapshot"
+    assert all(r[0] <= events[-1].timestamp.timestamp() // 300 for r in frozen.recent), \
+        "no bucket from after the replay"
+    assert sum(replay._addresses[("web01", "198.51.100.77")].hour_counts) == 1, \
+        "an address the snapshot never saw accumulates normally"
+
+
+def test_address_features_feed_only_the_rhythm_model() -> None:
+    from soc_ml.models.gbm import GBMBotClassifier
+    from soc_ml.models.gmm import GMMModel
+    rows = [{"bot.addr_hour_entropy": float(i % 3), "bot.asset_fetch_ratio": i / 100,
+             "timing.interarrival_cv": (i % 7) / 3, "bot.declared_bot": float(i % 2),
+             "ua.rarity": 0.5} for i in range(200)]
+    gbm = GBMBotClassifier()
+    gbm.fit(rows)
+    assert not any(f.startswith("bot.addr_") for f in gbm._features)
+    gmm = GMMModel()
+    gmm.fit(rows)
+    assert not any(f.startswith("bot.addr_") for f in gmm._scaler.features)

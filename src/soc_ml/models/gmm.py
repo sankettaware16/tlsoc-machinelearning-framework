@@ -34,7 +34,11 @@ class GMMModel(Model):
     incremental = False
 
     LABEL_KEY = "bot.declared_bot"
-    EXCLUDED_PREFIXES = ("ua.",)
+    #: ua.* is the label's source (leakage). bot.addr_* is the address rhythm
+    #: memory: warm in live, cold or snapshot-warmed in training — it feeds
+    #: only rhythm_iforest, so the human-likeness export keeps its inputs
+    #: (review 2026-10-22, S1).
+    EXCLUDED_PREFIXES = ("ua.", "bot.addr_")
     RANDOM_STATE = 7  # determinism (NFR-10)
     MAX_COMPONENTS = 8
 

@@ -318,10 +318,19 @@ class AddressMemory:
         if self.first_seen is None:
             self.first_seen = ts.isoformat()
 
-    def close_bucket(self, bucket: int, events: int) -> None:
+    def close_bucket(self, bucket: int, events: int, partial: bool = False) -> None:
+        """Record a closed bucket's event count for this address.
+
+        ``partial`` marks a bucket closed early (shutdown, end of a replay):
+        it counts as activity but never as a cadence sample, and the rest of
+        that bucket completes it after a restart (review 2026-10-22, C7).
+        """
         if self.recent and self.recent[-1][0] == bucket:
-            return  # another user-agent of this address, same bucket
-        self.recent.append([bucket, events])
+            last = self.recent[-1]
+            if len(last) > 2 and last[2]:          # completing an early-closed bucket
+                self.recent[-1] = [bucket, last[1] + events] + ([1] if partial else [])
+            return  # otherwise: another user-agent of this address, same bucket
+        self.recent.append([bucket, events] + ([1] if partial else []))
         del self.recent[:-_RECENT_BUCKETS]
 
     def hour_entropy(self) -> float:
@@ -334,10 +343,10 @@ class AddressMemory:
     def active_ratio(self, bucket: int) -> float:
         """Share of the last hour's 5-minute buckets this address was active in."""
         horizon = bucket - _RECENT_BUCKETS
-        return sum(1 for b, _ in self.recent if horizon < b <= bucket) / _RECENT_BUCKETS
+        return sum(1 for r in self.recent if horizon < r[0] <= bucket) / _RECENT_BUCKETS
 
     def rate_cv(self) -> float:
-        counts = [n for _, n in self.recent]
+        counts = [r[1] for r in self.recent if not (len(r) > 2 and r[2])]
         if len(counts) < _MIN_RATE_SAMPLES:
             return _NEUTRAL_RATE_CV
         mean = sum(counts) / len(counts)

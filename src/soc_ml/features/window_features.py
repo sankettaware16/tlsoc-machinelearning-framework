@@ -163,6 +163,11 @@ class WindowFeatureBuilder:
         self._served_types: dict[str, frozenset[str]] = {}
         # (server, ip) -> AddressMemory: rhythm across windows and user-agents.
         self._addresses: dict[tuple[str, str], AddressMemory] = {}
+        # Addresses whose long-term history came from a snapshot taken *after*
+        # the events being replayed: their hour histogram is frozen so the
+        # replay neither counts its events twice nor reads its own future
+        # (review 2026-10-22, C10/C15). Live restores do not freeze.
+        self._frozen_history: set[tuple[str, str]] = set()
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -201,7 +206,11 @@ class WindowFeatureBuilder:
             self._open[key] = window
             self._source_for(event.entity, bucket).open_windows += 1
         self._fold(window, event, ts)
-        self._address_for(event.entity.server, event.entity.ip).remember(ts)
+        key = (event.entity.server, event.entity.ip)
+        if key not in self._frozen_history:
+            self._address_for(*key).remember(ts)
+        else:
+            self._address_for(*key)  # keep it recent in the LRU
         source = self._source_for(event.entity, bucket)
         source.count += 1
         if len(source.ua_hashes) < _MAX_SOURCE_UAS:
@@ -218,9 +227,13 @@ class WindowFeatureBuilder:
             yield from self._sweep()
 
     def flush(self) -> Iterator[WindowResult]:
-        """Close everything — end of an offline pass."""
+        """Close everything — end of an offline pass, or shutdown.
+
+        These buckets are cut short, so their address counts are recorded as
+        partial (review 2026-10-22, C7).
+        """
         for key in sorted(self._open, key=lambda k: self._open[k].start):
-            yield self._close(self._open[key])
+            yield self._close(self._open[key], partial=True)
         self._open.clear()
 
     # -- durable state ------------------------------------------------- #
@@ -306,9 +319,21 @@ class WindowFeatureBuilder:
         """The address memory, oldest first (the runtime persists it, D-036)."""
         return {"addresses": [[s, ip, m.to_row()] for (s, ip), m in self._addresses.items()]}
 
-    def restore_address_memory(self, doc: dict) -> None:
+    def restore_address_memory(self, doc: dict, *, history_only: bool = False) -> None:
+        """Load a persisted address memory.
+
+        ``history_only`` is for offline replays of logs the snapshot already
+        covers (training, ``check_candidate``): keep the long-term hour profile
+        and days, freeze them, and drop the recent buckets — those are rebuilt
+        from the replay itself.
+        """
         for server, ip, row in (doc.get("addresses") or [])[-_MAX_ADDRESSES:]:
-            self._addresses[(str(server), str(ip))] = AddressMemory.from_row(row)
+            key = (str(server), str(ip))
+            memory = AddressMemory.from_row(row)
+            if history_only:
+                memory.recent = []
+                self._frozen_history.add(key)
+            self._addresses[key] = memory
 
     @property
     def address_count(self) -> int:
@@ -396,7 +421,7 @@ class WindowFeatureBuilder:
         for key in sorted(due, key=lambda k: self._open[k].start):
             yield self._close(self._open.pop(key))
 
-    def _close(self, w: _OpenWindow) -> WindowResult:
+    def _close(self, w: _OpenWindow, partial: bool = False) -> WindowResult:
         self.stats["windows_closed"] += 1
         server = w.entity.server
         n = w.count
@@ -430,7 +455,7 @@ class WindowFeatureBuilder:
         source_key = (server, w.entity.ip, bucket)
         source = self._sources.get(source_key) or _SourceAgg()
         address = self._address_for(server, w.entity.ip)
-        address.close_bucket(bucket, source.count)
+        address.close_bucket(bucket, source.count, partial=partial)
         window_end = w.start + timedelta(seconds=self.window_s)
         values.update({
             "bot.addr_hour_entropy": address.hour_entropy(),

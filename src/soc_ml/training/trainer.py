@@ -90,7 +90,7 @@ def train_bundle(
     log("pass 2/2: building feature windows ...")
     builder = WindowFeatureBuilder(profile)
     if address_memory:
-        builder.restore_address_memory(address_memory)
+        builder.restore_address_memory(address_memory, history_only=True)
         log(f"  address memory warmed: {builder.address_count:,} addresses")
     results = []
     seen = 0
