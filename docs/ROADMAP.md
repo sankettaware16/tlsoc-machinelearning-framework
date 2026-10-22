@@ -214,6 +214,33 @@ layer (corroboration, campaign folding, fleet-simultaneity) and SAIF v1.
 
 ---
 
+## Advisory review 2026-10-22 *(docs/ADVISORY_REVIEW_2026-10-22.md, D-035)*
+
+Done:
+- [x] Promotion gated on a recorded `check_candidate` verdict; rollback target;
+      `code_commit` in bundles; console shows verdicts (P1)
+- [x] M-001 pre-registered before its window (P1)
+- [x] Gate fire share per local hour in health and console (P1, step 1)
+- [x] Local day for budgets and folds; per-use-case run modes; hour-wide drift
+      sample; durable checkpoint (P2/P3)
+- [x] Transition-to-success escalation, narrower than the review's wording on
+      measured evidence (D-034)
+
+Open, in order:
+- [ ] bot_detection: rhythm (unsupervised) component for the spoofing alert;
+      address-keyed activity memory persisted in the checkpoint;
+      `memory_hours_observed` in evidence (P1) — *in progress*
+- [ ] `check_candidate --seeds`: judge on the worst seed (P2)
+- [ ] Synthetic-attack harness through the real engine, detection always
+      reported beside its false-alarm rate (P2)
+- [ ] Server-scoped window (flood, fleet-simultaneity) in observe mode (P2)
+- [ ] Learned burst stage (p99.9 of the server's own distribution) (P2)
+- [ ] Hour-stratified calibration behind a flag, backtested first (P1, step 2)
+- [ ] Per-address cap in corpus hygiene (P3)
+- [ ] One `ruff check --fix`; ruff (and mypy) in the test command (P3)
+
+---
+
 ## Phase 3b — Remaining Tier-1 detectors
 
 - [ ] UC-01 `credential_stuffing` — Half-Space Trees streaming + coordination layer

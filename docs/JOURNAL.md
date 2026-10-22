@@ -10,6 +10,63 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-22 — An outside review, and the evidence layer it asked for
+
+### D-035 · Promotion needs a recorded verdict; measurements are ruled before they run
+
+**Context.** A researcher measuring the same mechanisms on the same IITB feed
+reviewed the repository at `cbf1e34` (`docs/ADVISORY_REVIEW_2026-10-22.md`).
+Its summary: the operational hardening is real; the *evidence layer* is thin —
+promotion is a button with no recorded verdict behind it, measurements are
+judged after the numbers exist, comparisons rest on one seed. D-032's blind
+retrain was refused only because someone ran the replay.
+
+**Done the same day** (each with tests; 247 passing):
+
+1. **Promotion is gated** (P1). `check_candidate` writes `approval_check.json`
+   into the candidate's bundle — verdict PASS / WARN / DO_NOT_APPROVE, fire
+   rates, canary, per-incident addresses caught by each bundle, a SHA-256
+   over the replayed events, the code commit. `ModelRegistry.promote` refuses
+   a version without PASS/WARN *checked against the bundle serving now*, from
+   the CLI, the dashboard and `train --promote` alike. Exceptions are recorded
+   in the bundle: the first model (`bootstrap`) and `--force --reason`.
+   Promotion records the displaced version; rollback returns to it (it used to
+   pick "the newest other version", which can be a never-served candidate);
+   pruning keeps it. Bundles carry `code_commit`. The console shows each
+   verdict and greys Approve without one.
+2. **The day is the deployment's day** (P2). Budgets and once-per-day folds
+   counted UTC dates; the IST SOC's promise reset at 05:30 and on 10-21 the
+   three deliveries were spent before the git dump arrived (D-034).
+3. **Per-use-case run modes** (FR-70) are honoured; they were config only.
+4. **Drift samples the whole hour** (algorithm R). It kept the first ~2,000
+   windows after each check — under two minutes of traffic on this feed.
+5. **The checkpoint is fsynced** before its rename.
+6. **Gate fire share per local hour** vs the design share is in health and the
+   console, flagged outside [0.5×, 2×] — the drift the frozen calibration
+   suffers (the serving web_recon bundle measured 5.4× in D-032).
+7. **M-001 is pre-registered** (`docs/measurements/M-001-progressive-7d.md`,
+   script and tests committed first): 2026-10-23 → 10-30 IST. Writing it
+   caught a vacuous metric: with `--daily-budget 3`, "delivered ≤ 3" passes by
+   construction; H1 counts what was *queued before the cap*.
+
+**Not taken as written.** The review's transition-to-success wording ("a 2xx on
+a path with IDF ≈ 1.0") was replayed against the narrower rule: 11
+escalations, nearly all new news images and JS chunks, against 1 real git dump
+(D-034). The narrower rule stands.
+
+**Queued, from the review** (ROADMAP "Advisory review"): bot_detection's
+rhythm component and address-keyed persisted activity memory (in progress);
+`--seeds` in `check_candidate`; a synthetic-attack harness; the server-scoped
+window for floods; per-address corpus caps in hygiene; a learned burst stage;
+hour-stratified calibration behind a flag; one `ruff --fix` pass with lint in
+the test command.
+
+**Lives in.** `registry/store.py`, `core/provenance.py`,
+`scripts/check_candidate.py`, `web/`, `detection/{runtime,budget}.py`,
+`fusion/progressive.py`, `scripts/measure_m001.py`, `docs/measurements/`.
+
+---
+
 ## 2026-10-22 — A scan that finds something; a real git dump, missed twice
 
 ### D-034 · Escalate a success on a never-served file type — and the attack that proved why
