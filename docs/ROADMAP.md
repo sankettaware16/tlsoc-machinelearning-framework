@@ -227,9 +227,11 @@ Done:
       measured evidence (D-034)
 
 Open, in order:
-- [ ] bot_detection: rhythm (unsupervised) component for the spoofing alert;
-      address-keyed activity memory persisted in the checkpoint;
-      `memory_hours_observed` in evidence (P1) — *in progress*
+- [x] bot_detection: rhythm (unsupervised) component for the spoofing alert;
+      address-keyed activity memory, persisted; memory age in evidence (P1,
+      D-036) — candidate awaiting approval
+- [x] One `ruff check --fix` (68 → 23 findings); adversarial review of the
+      day's changes — 17 confirmed defects fixed (D-037)
 - [ ] `check_candidate --seeds`: judge on the worst seed (P2)
 - [ ] Synthetic-attack harness through the real engine, detection always
       reported beside its false-alarm rate (P2)
@@ -237,7 +239,7 @@ Open, in order:
 - [ ] Learned burst stage (p99.9 of the server's own distribution) (P2)
 - [ ] Hour-stratified calibration behind a flag, backtested first (P1, step 2)
 - [ ] Per-address cap in corpus hygiene (P3)
-- [ ] One `ruff check --fix`; ruff (and mypy) in the test command (P3)
+- [ ] ruff (and mypy) in the test command; the remaining 23 findings (P3)
 
 ---
 

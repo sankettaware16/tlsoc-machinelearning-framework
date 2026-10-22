@@ -10,6 +10,97 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-22 (late) — Two redesigns, then an adversarial review of the day
+
+### D-037 · Seventeen defects in a day's work, found by trying to refute it
+
+**Context.** In one day the framework gained finding escalation (D-034), a
+promotion gate, local days, per-use-case modes, an hour-wide drift sample
+(D-035), and bot_detection's address rhythm (D-036) — most of it deployed
+mid-measurement. Before trusting it, five independent reviewers (delivery,
+state, features, measurement, gate integrity) read the diff `cbf1e34..` and
+reported defects; every report went to two skeptics with different lenses
+(code truth; reproduction and impact) told to refute it. 22 reports → **17
+upheld by both, 1 split, 4 refuted**, most reproduced with scratch scripts.
+
+**What it found that mattered most.**
+
+* **M-001 could not fail** — the very trap D-035 claimed to avoid. H1
+  counted empty and future days as passing; H2 and H3 chose their population
+  by fields only the branch under test writes; H4 counted tracebacks from
+  before the window. Fixed before the window opened (the document records
+  the revision): H1 is "not testable" until the window closes and if any day
+  has no rows; H2's population is the score row's own `findings` count,
+  written before delivery decides; H3 is cross-checked against the digest
+  file; runtime log lines are timestamped so H4 counts only the window.
+* **A finding could be folded away** into an earlier alert that had none,
+  and findings competed with ordinary alerts for the daily cap — the exact
+  shape of the 10-21 git-dump miss. Findings now fold only into an alert
+  that carried one, bypass the cap (recorded), and override crawler
+  suppression (a verified crawler getting `/.env` back means it is public).
+  An episode running across midnight is no longer delivered twice.
+* **Rollback bypassed the gate.** Its fallback ("the newest other version")
+  could serve the pending — even DO_NOT_APPROVE — candidate. Rollback now
+  goes only to a version that has served, else refuses; the console agrees.
+* **Snapshot memory double-counted** the replayed events and let training
+  read its own future; **profiles learned "served"** from one attacker's
+  successes; **findings** could be crowded out by catch-all pages or hidden
+  by a HEAD probe; a **13-minute replay** judged a 30-minute gate (the first
+  rhythm candidate's PASS rested on it, and was superseded). All fixed.
+
+**Also found by testing the tests:** a midnight test whose clock never
+crossed midnight, and a findings test that passed only because the catch-all
+filter removed its inputs first. Both rewritten; every new test was run
+against the previous code and fails there.
+
+**Rules out.** Shipping a measurement or a gate without first asking how it
+could fail; reading a passing test as evidence without checking it can fail.
+
+**Lives in.** commits `f98742e`, `475c2f6`; `tests/test_{progressive,findings,
+registry,address_rhythm,approval_gate,measure_m001}.py`.
+
+### D-036 · bot_detection: address rhythm memory and a label-free rhythm model
+
+**Context.** D-032: a GBM retrained on current traffic scored the live
+headless botnet P(bot) 0.22 and fired on none of its 756 windows; the label
+("admits to being a bot") cannot teach "headless browser", and the botnet's
+only tells were temporal. The advisory review (P1) proposed exactly the split
+taken here.
+
+**Decision.**
+1. **Address memory**, keyed by (server, address) — the stable actor (the
+   botnet shared one user-agent across 30 addresses; the scanners one address
+   across 34 user-agents): a 24-hour activity histogram, days seen, and recent
+   per-bucket counts. Features `bot.addr_hour_entropy`, `bot.addr_active_ratio`,
+   `bot.addr_rate_cv`; evidence `addr_memory_hours`, `addr_days_observed`, so a
+   cold memory reads "unknown", not "human". Persisted every 10 minutes and at
+   shutdown (a separate file — it reaches megabytes; the checkpoint is written
+   every 30 s), restored at start. The LRU holds 50,000 addresses; at today's
+   traffic it is full within the hour — an address active every five minutes
+   is never least-recent, so the bots it exists for keep their history.
+2. **`rhythm_iforest`**: an Isolation Forest over rhythm and browser-likeness
+   (`RHYTHM_INPUTS`), fitted and calibrated on browser-declared windows only
+   (new `UseCase.training_rows` hook), joining the spoofing gate's max-fusion.
+   The GBM stays the human-likeness export and, after review S1, never sees the
+   address features — its inputs are what they were.
+3. Training and `check_candidate` take `--memory-from` the runtime's snapshot,
+   restored history-only (D-037).
+4. A bundle trained before a declared model loads without it (visible warning).
+
+**First measurement (before the review fixes).** On the captured botnet, a
+candidate trained on today's traffic fired on 926 windows, **every one carried
+by `rhythm_iforest`** (3,035 windows over the gate vs the GBM's 20 and the
+GMM's 15) — 28 of 68 addresses, as the serving model. The same retraining
+without the rhythm model catches none (D-032). The corrected candidate's
+numbers follow below once its check completes.
+
+**Lives in.** `features/bot_features.py` (`AddressMemory`),
+`features/window_features.py`, `models/rhythm.py`, `usecases/bot_detection.py`,
+`core/plugins.py` (`training_rows`), `training/trainer.py`,
+`detection/runtime.py`, `registry/store.py`, `tests/test_address_rhythm.py`.
+
+---
+
 ## 2026-10-22 — An outside review, and the evidence layer it asked for
 
 ### D-035 · Promotion needs a recorded verdict; measurements are ruled before they run
