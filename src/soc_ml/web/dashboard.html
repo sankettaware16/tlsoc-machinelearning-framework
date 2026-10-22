@@ -338,7 +338,15 @@ function renderUseCases(ov){
           <b>${u.fired_per_day === null ? "–" : u.fired_per_day}</b><span>fires/day</span></button>
         <button class="stat" onclick="openUseCase('${esc(u.slug)}')">
           <b>${u.fire_rate_pct === null ? "–" : u.fire_rate_pct + "%"}</b><span>of windows</span></button>
-      </div>${budget}
+      </div>${budget}${(() => {
+        const h = (u.fire_share_by_hour || []).slice(-2, -1)[0] || (u.fire_share_by_hour || []).slice(-1)[0];
+        if(!h || h.vs_design === null || h.vs_design === undefined) return "";
+        const off = h.vs_design > 2 || h.vs_design < 0.5;
+        return `<div class="note" style="color:${off ? "var(--warn)" : "var(--dim)"}">
+          Gate fire share ${esc(h.hour.slice(11))}:00 local: ${h.share_pct}% of windows
+          — ${h.vs_design}× the ${u.design_share_pct}% design${off
+            ? ". Outside [0.5×, 2×]: the frozen calibration has drifted for this hour." : "."}</div>`;
+      })()}
     </div>`;
   }).join("");
 }
@@ -365,6 +373,12 @@ function openUseCase(slug){
       <tr><th>digested</th><td>${nf(u.digested)} (${nf(u.candidates || 0)} progressive
           candidates, ${nf(u.digested - (u.candidates || 0))} over budget)</td></tr>
       <tr><th>suppressed</th><td>${nf(u.suppressed)}</td></tr>
+      <tr><th>gate fire share<br>by local hour</th><td class="mono">${
+        (u.fire_share_by_hour || []).length
+          ? (u.fire_share_by_hour || []).slice().reverse().map(h =>
+              `${esc(h.hour.replace("T", " "))}h  ${h.share_pct}%  `
+              + `(${h.vs_design ?? "–"}× design, ${nf(h.fired)}/${nf(h.windows)})`).join("<br>")
+          : "–"}</td></tr>
       <tr><th>drift</th><td>${esc(u.drift?.band || "–")} · max PSI
           ${u.drift?.max_psi ?? "–"}${u.drift?.should_retrain ? " · retrain recommended" : ""}</td></tr>
       <tr><th>artifacts</th><td class="mono">alerts ${bytes(f.alerts)} ·

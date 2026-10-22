@@ -104,3 +104,19 @@ def test_the_checkpoint_is_written_through(tmp_path: Path) -> None:
     assert json.loads(ckpt.read_text())["offsets"]
     assert not ckpt.with_suffix(".tmp").exists()
 
+
+
+def test_health_reports_the_gate_fire_share_per_local_hour(tmp_path: Path) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", _normal_and_scan())
+    DetectionRuntime(RuntimeConfig(
+        input_dir=incoming, data_dir=tmp_path, mode="shadow", follow=False,
+        allow_cold_start=True, timezone_name="Asia/Kolkata"), log=lambda *_: None).run()
+    health = json.loads((tmp_path / "state" / "web_recon_health.json").read_text())
+    assert health["design_share_pct"] == 0.3
+    rows = health["fire_share_by_hour"]
+    assert rows and all(r["hour"].startswith("2026-07-09T") for r in rows)
+    assert rows[0]["hour"].endswith("T13"), "08:00 UTC is 13:30 IST"
+    assert sum(r["windows"] for r in rows) == health["windows"]
+    assert all(r["vs_design"] == round(r["share_pct"] / 0.3, 2) for r in rows)

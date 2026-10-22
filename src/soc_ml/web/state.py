@@ -219,6 +219,8 @@ class DashboardState:
                 "folded": health.get("alerts_folded", 0),
                 "digested": health.get("alerts_digested", 0),
                 "candidates": health.get("alerts_candidates", 0),
+                "design_share_pct": health.get("design_share_pct"),
+                "fire_share_by_hour": health.get("fire_share_by_hour") or [],
                 "suppressed": health.get("alerts_suppressed", 0),
                 "drift": {
                     "band": drift.get("band"),
