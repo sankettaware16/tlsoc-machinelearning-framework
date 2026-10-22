@@ -68,7 +68,8 @@ _MAX_OPEN_WINDOWS = 250_000  # hard guard against a badly unsorted feed
 _MAX_TRACKED_ENTITIES = 200_000  # cross-window entity-memory cap
 _SWEEP_EVERY = 1000  # events between watermark sweeps
 _MAX_SOURCE_UAS = 256  # per-(server, ip, bucket) cap on distinct user-agents
-_MAX_FINDINGS = 10  # successes on never-served file types kept per address-bucket
+_MAX_FINDINGS = 10  # findings reported per address-bucket (after the catch-all filter)
+_MAX_FINDING_CANDIDATES = 256  # kept *before* the filter, so soft-404s cannot crowd out a file
 _MAX_ADDRESSES = 50_000  # address-memory LRU (persisted by the runtime, D-036)
 
 
@@ -207,11 +208,8 @@ class WindowFeatureBuilder:
             source.ua_hashes.add(event.entity.ua_hash)
         if event.url_path and len(source.paths) < _MAX_DISTINCT_PATHS:
             source.paths.add(event.url_path)
-        if (len(source.findings) < _MAX_FINDINGS and self._is_finding(event)
-                and all(f["path"] != event.url_path for f in source.findings)):
-            source.findings.append({"path": event.url_path,
-                                    "status": event.status_code,
-                                    "bytes": event.body_bytes})
+        if self._is_finding(event):
+            self._note_finding(source, event)
         self._note_unserved_success(source, event)
 
         self._since_sweep += 1
@@ -267,9 +265,25 @@ class WindowFeatureBuilder:
             served = self._served_types[server] = self.profile.served_types(server)
         return kind not in served and not self.profile.path_served(server, event.url_path)
 
+    @staticmethod
+    def _note_finding(source: _SourceAgg, event: Event) -> None:
+        # Keyed by path, keeping the largest body seen: a HEAD probe answers
+        # every path with 0 bytes, and the first response must not hide the
+        # GET that returned the file (review 2026-10-22, C11).
+        known = next((f for f in source.findings if f["path"] == event.url_path), None)
+        if known is not None:
+            if (event.body_bytes or 0) > (known["bytes"] or 0):
+                known.update(status=event.status_code, bytes=event.body_bytes)
+            return
+        if len(source.findings) < _MAX_FINDING_CANDIDATES:
+            source.findings.append({"path": event.url_path,
+                                    "status": event.status_code,
+                                    "bytes": event.body_bytes})
+
     def _note_unserved_success(self, source: _SourceAgg, event: Event) -> None:
         status = event.status_code or 0
-        if (not 200 <= status < 300 or event.body_bytes is None or not event.url_path
+        # An empty body is no evidence of a catch-all page (HEAD, 204).
+        if (not 200 <= status < 300 or not event.body_bytes or not event.url_path
                 or self.profile.path_served(event.entity.server, event.url_path)):
             return
         paths = source.unserved_ok_sizes.setdefault(event.body_bytes, set())
@@ -457,8 +471,9 @@ class WindowFeatureBuilder:
             "source_findings": [
                 f for f in source.findings
                 if f["bytes"] is None
-                or len(source.unserved_ok_sizes.get(f["bytes"], ())) < 2
-            ],
+                or (f["bytes"] > 0
+                    and len(source.unserved_ok_sizes.get(f["bytes"], ())) < 2)
+            ][:_MAX_FINDINGS],
             # Identity context for UC-04's gate and the crawler export —
             # evidence, deliberately never model input (models learn behavior,
             # not IP ranges).

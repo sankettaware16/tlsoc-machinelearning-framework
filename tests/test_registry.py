@@ -224,3 +224,48 @@ def test_the_rollback_target_survives_pruning(tmp_path: Path) -> None:
     reg.promote("web_recon", "v07")
     assert "v00" in reg.versions("web_recon"), "pruning kept what rollback needs"
     assert reg.rollback("web_recon") == "v00"
+
+
+
+# ------------------------------- rollback ------------------------------- #
+# Review 2026-10-22 (C6/C17): the "newest other version" fallback could serve
+# the pending candidate — even a DO_NOT_APPROVE one — bypassing the gate.
+
+
+def test_rollback_never_lands_on_an_unapproved_candidate(tmp_path: Path) -> None:
+    reg = ModelRegistry(tmp_path)
+    reg.save_bundle(make_bundle("v1"))
+    reg.promote("web_recon", "v1")                       # bootstrap: no rollback target
+    reg.save_bundle(make_bundle("v2"))
+    reg.set_candidate("web_recon", "v2")
+    reg.write_approval("web_recon", "v2", {"verdict": "DO_NOT_APPROVE", "serving": "v1"})
+    assert reg.rollback_target("web_recon") is None
+    with pytest.raises(ValueError, match="no recorded earlier serving version"):
+        reg.rollback("web_recon")
+    assert reg.current_version("web_recon") == "v1"
+
+
+def test_rollback_falls_back_only_to_versions_that_served(tmp_path: Path) -> None:
+    reg = ModelRegistry(tmp_path)
+    for v in ("v1", "v2", "v3"):
+        reg.save_bundle(make_bundle(v))
+    reg.promote("web_recon", "v1")
+    _approve(reg, "v2")
+    reg.promote("web_recon", "v2")
+    _approve(reg, "v3")
+    reg.promote("web_recon", "v3")
+    reg.update_metadata("web_recon", "v3", rollback_target=None)  # lost record
+    reg.save_bundle(make_bundle("v4"))
+    reg.set_candidate("web_recon", "v4")
+    assert reg.rollback("web_recon") == "v2", "the most recently promoted, not v4"
+    assert reg.metadata("web_recon", "v2")["rolled_back_to"]["from"] == "v3"
+
+
+def test_two_rollbacks_walk_back_through_serving_history(tmp_path: Path) -> None:
+    reg = ModelRegistry(tmp_path)
+    for v in ("v1", "v2", "v3"):
+        reg.save_bundle(make_bundle(v))
+        _approve(reg, v)
+        reg.promote("web_recon", v)
+    assert reg.rollback("web_recon") == "v2"
+    assert reg.rollback("web_recon") == "v1"

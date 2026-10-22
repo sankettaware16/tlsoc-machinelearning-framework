@@ -187,3 +187,46 @@ def test_a_real_file_among_catch_all_answers_is_still_found() -> None:
                                 _sized("/.git-credentials", 2848, 2),
                                 _sized("/.env", 913, 3)])
     assert [f["path"] for f in ev[0]["source_findings"]] == ["/.env"]
+
+
+
+def test_catch_all_answers_cannot_crowd_out_a_real_file() -> None:
+    """Review C9: the cap used to apply before the catch-all filter."""
+    probes = [_sized(f"/probe{i}.env", 2848, i + 1) for i in range(40)]
+    ev = _evidence(_profile(), [_ev("/x.php", 404, seconds=0)] + probes
+                   + [_sized("/.git/config", 311, 60)])
+    assert [f["path"] for f in ev[0]["source_findings"]] == ["/.git/config"]
+
+
+def test_a_head_probe_does_not_hide_the_get_that_returned_the_file() -> None:
+    """Review C11: HEAD answers every path with 0 bytes."""
+    events = [_ev("/x.php", 404, seconds=0)]
+    events += [_sized(p, 0, i + 1) for i, p in enumerate(["/.env", "/a.sql", "/b.bak"])]
+    events += [_sized("/.env", 913, 10)]
+    ev = _evidence(_profile(), events)
+    assert ev[0]["source_findings"] == [{"path": "/.env", "status": 200, "bytes": 913}]
+
+
+
+def test_a_finding_overrides_crawler_suppression() -> None:
+    """A verified crawler that gets /.env back means the file is public."""
+    from types import SimpleNamespace
+
+    from soc_ml.baseline.profile import EnvironmentProfile
+    from soc_ml.detection.scorer import Scorer
+    from soc_ml.usecases import WebRecon
+    from tests.test_detection_lifecycle import alert as make_alert
+    scorer = Scorer.__new__(Scorer)
+    scorer.usecase = WebRecon(EnvironmentProfile())
+    ann = {"crawler.is_verified": True, "crawler.robots_txt": True,
+           "crawler.human_likeness": 0.1, "source": "bot_detection"}
+    found = make_alert()
+    found.links["findings"] = [{"path": "/.env", "status": 200, "bytes": 913}]
+    out = SimpleNamespace(evidence={"entity_annotations": ann}, alert=found)
+    scorer._apply_suppression(out)
+    assert found.delivered and found.suppressed_by is None
+    assert found.links["suppression_overridden"].startswith("finding overrides")
+    plain = make_alert()
+    scorer._apply_suppression(SimpleNamespace(evidence={"entity_annotations": ann},
+                                              alert=plain))
+    assert plain.delivered is False, "without a finding the crawler is suppressed as before"
