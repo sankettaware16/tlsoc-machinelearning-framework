@@ -10,6 +10,7 @@ from .gmm import GMMModel
 from .hdbscan_cluster import HDBSCANClusterModel
 from .isolation_forest import IsolationForestModel
 from .lof import LOFNoveltyModel
+from .rhythm import RhythmIsolationForest
 
 __all__ = [
     "GBMBotClassifier",
@@ -17,4 +18,5 @@ __all__ = [
     "HDBSCANClusterModel",
     "IsolationForestModel",
     "LOFNoveltyModel",
+    "RhythmIsolationForest",
 ]

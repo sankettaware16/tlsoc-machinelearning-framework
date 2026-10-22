@@ -34,6 +34,7 @@ Design choices that matter in production:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -45,6 +46,8 @@ from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.fusion.calibration import PercentileCalibrator
 
 __all__ = ["ModelBundle", "ModelRegistry", "PromotionRefused", "APPROVAL_FILE"]
+
+log = logging.getLogger(__name__)
 
 _HOT_VERSIONS = 3  # keep this many old versions for rollback (spec §14)
 
@@ -104,8 +107,16 @@ class ModelBundle:
         reference = json.loads(ref_path.read_text()) if ref_path.exists() else {}
         models: dict[str, Any] = {}
         for slug, factory in model_factories.items():
+            path = bundle_dir / f"{slug}.joblib"
+            if not path.exists() or slug not in calibrators:
+                # A model declared after this bundle was trained (D-036): the
+                # bundle serves as trained, without it — the same visible
+                # degradation as a missing optional dependency (NFR-08).
+                log.warning("%s %s: no %s in this bundle — serving without it",
+                            metadata.get("usecase"), bundle_dir.name, slug)
+                continue
             model = factory()
-            model.load(bundle_dir / f"{slug}.joblib")
+            model.load(path)
             models[slug] = model
         return cls(
             usecase=metadata.get("usecase", bundle_dir.parent.name),

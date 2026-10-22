@@ -488,9 +488,13 @@ def cmd_train(args: argparse.Namespace) -> int:
     def progress(msg: str) -> None:
         print(f"  [{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+    memory = None
+    if getattr(args, "memory_from", None):
+        memory = json.loads(Path(args.memory_from).read_text(encoding="utf-8"))
     try:
         bundle = train_bundle(
-            uc_cls, factories, stream, source_desc=str(args.input), log=progress
+            uc_cls, factories, stream, source_desc=str(args.input), log=progress,
+            address_memory=memory,
         )
     except TrainingError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
@@ -710,6 +714,9 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--out", default="data", help="registry/data root")
     tr.add_argument("--promote", action="store_true",
                     help="promote immediately to serving (else registered as candidate)")
+    tr.add_argument("--memory-from", default=None, dest="memory_from",
+                    help="warm address memory from the runtime's snapshot "
+                         "(data/state/<use cases>_address_memory.json, D-036)")
     tr.set_defaults(func=cmd_train)
 
     rn = sub.add_parser("run", help="run the live detection pipeline (streaming)")

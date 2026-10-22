@@ -73,6 +73,7 @@ import soc_ml.usecases  # noqa: F401 — register use-case plugins
 __all__ = ["DetectionRuntime", "RuntimeConfig"]
 
 _DRIFT_RESERVOIR = 4000  # live feature values retained per feature for PSI
+_ADDRESS_MEMORY_EVERY_S = 600.0  # persist address memory (MBs) far less often than offsets
 
 
 class RuntimeConfig:
@@ -262,12 +263,14 @@ class DetectionRuntime:
             dlq_path=self.state_dir / f"{self.cfg.set_key}_dlq.ndjson",
         )
         self._restore_checkpoint(source)
+        self._restore_address_memory()
         self._source = source
         for runner in self.runners:
             if runner.mode == "live":
                 self._open_sink(runner)
 
         self._last_ckpt = self._last_health = self._last_drift = time.monotonic()
+        self._last_memory = self._last_ckpt
         try:
             for event in source.read():
                 if self._stop:
@@ -306,6 +309,9 @@ class DetectionRuntime:
         if now - self._last_drift >= self.cfg.drift_every_s:
             self._check_drift()
             self._last_drift = now
+        if now - self._last_memory >= _ADDRESS_MEMORY_EVERY_S:
+            self._save_address_memory()
+            self._last_memory = now
 
     # ------------------------------------------------------------------ #
     # Model loading / cold start
@@ -626,6 +632,42 @@ class DetectionRuntime:
             except Exception as exc:
                 self.log(f"[runtime] WARN: checkpoint unreadable ({exc}); starting fresh")
 
+    def _memory_path(self) -> Path:
+        return self.state_dir / f"{self.cfg.set_key}_address_memory.json"
+
+    def _save_address_memory(self) -> None:
+        """Address rhythm memory outlives the process (D-036).
+
+        Every builder sees the same stream, so any one holds the same memory.
+        Lost at most ten minutes of it on an unclean kill — the features then
+        under-read briefly, and ``addr_memory_hours`` says so.
+        """
+        builder = next((r.builder for r in self.runners if r.builder), None)
+        if builder is None:
+            return
+        path = self._memory_path()
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(builder.export_address_memory(), separators=(",", ":")))
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+
+    def _restore_address_memory(self) -> None:
+        path = self._memory_path()
+        if not path.exists():
+            return
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            self.log(f"[runtime] WARN: address memory unreadable ({exc}); starting cold")
+            return
+        for runner in self.runners:
+            if runner.builder:
+                runner.builder.restore_address_memory(doc)
+        count = next((r.builder.address_count for r in self.runners if r.builder), 0)
+        self.log(f"[runtime] address memory restored: {count:,} addresses")
+
     def _save_checkpoint(self, source: FileSource) -> None:
         doc = source.checkpoint()
         family: set = set()
@@ -684,6 +726,7 @@ class DetectionRuntime:
                 "ingest_failed": source.stats.failed,
                 "ingest_skipped_non_request": source.stats.skipped_non_request,
                 "entity_annotations": self.annotations.size,
+                "address_memory": runner.builder.address_count if runner.builder else 0,
                 "design_share_pct": runner.design_share_pct,
                 "fire_share_by_hour": self._hourly_share(runner),
                 **runner.stats,
@@ -738,6 +781,7 @@ class DetectionRuntime:
                 if remaining:
                     self._handle_many(runner, remaining, source)
         self._save_checkpoint(source)
+        self._save_address_memory()
         self._write_health(source)
         for runner in self.runners:
             if runner.sink:

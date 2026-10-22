@@ -30,7 +30,7 @@ from typing import Any
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.core.contracts import FeatureVector, RunMode
 from soc_ml.core.plugins import UseCase
-from soc_ml.features.bot_features import BOT_DETECTION_FEATURES
+from soc_ml.features.bot_features import ADDRESS_RHYTHM_FEATURES, BOT_DETECTION_FEATURES
 
 __all__ = ["BotDetection"]
 
@@ -48,7 +48,7 @@ class BotDetection(UseCase):
     )
 
     tier = 1
-    requires = BOT_DETECTION_FEATURES + (
+    requires = BOT_DETECTION_FEATURES + ADDRESS_RHYTHM_FEATURES + (
         "timing.interarrival_cv",
         "ua.rarity",
         "ua.len",
@@ -58,7 +58,7 @@ class BotDetection(UseCase):
         "web.status_4xx_ratio",
         "web.status_5xx_ratio",
     )
-    models = ("gbm_bot", "gmm", "hdbscan_cluster")
+    models = ("gbm_bot", "gmm", "hdbscan_cluster", "rhythm_iforest")
     default_mode = RunMode.SHADOW
     daily_alert_budget = 50
 
@@ -69,7 +69,9 @@ class BotDetection(UseCase):
     SUSTAINED_WINDOWS = 6
     #: Only these models vote on the spoofing gate; the cluster model feeds
     #: the export, not the alert.
-    GATE_MODELS = ("gbm_bot", "gmm")
+    GATE_MODELS = ("gbm_bot", "gmm", "rhythm_iforest")
+    #: Fitted on browser-declared windows only (see training_rows).
+    BROWSER_FITTED = ("rhythm_iforest",)
     # Conservative evidence floor (spec leaves UC-04's floor implicit; same
     # reading as D-017): too few requests is noise, not a bot judgment.
     MIN_EVENTS = 5
@@ -107,6 +109,14 @@ class BotDetection(UseCase):
         """Max over the gate models only (cluster membership never gates)."""
         gating = [v for k, v in calibrated.items() if k in self.GATE_MODELS]
         return max(gating) if gating else max(calibrated.values())
+
+    def training_rows(
+        self, model_slug: str, rows: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        """The rhythm model learns what *browsers* look like here (D-036)."""
+        if model_slug in self.BROWSER_FITTED:
+            return [r for r in rows if r.get("bot.declared_bot", 0.0) < 0.5]
+        return rows
 
     def calibration_rows(
         self, model_slug: str, rows: list[dict[str, float]]
