@@ -43,6 +43,10 @@ _MAX_UAS_PER_SERVER = 100_000
 # one stray success (a misconfigured 200 on an error page) must not whitelist
 # an extension forever.
 _SERVED_MIN_COUNT = 3
+# A path or file type is *served* only once 2xx responses reached this many
+# distinct clients: one attacker's git dump (6,519 objects, one address) must
+# not teach the next model that .git is normal (review 2026-10-22, C8).
+_SERVED_MIN_CLIENTS = 3
 
 
 class EnvironmentProfile:
@@ -64,6 +68,10 @@ class EnvironmentProfile:
         # server -> Counter(path -> 2xx occurrences): what was actually served.
         # Not path_df: scanners *request* /.env all day and get 404s.
         self._path_ok: dict[str, Counter] = {}
+        # server -> {path | file type -> clients}: up to _SERVED_MIN_CLIENTS
+        # distinct client addresses that got a 2xx, then just the number.
+        self._path_clients: dict[str, dict[str, list | int]] = {}
+        self._type_clients: dict[str, dict[str, list | int]] = {}
         # usecase -> feature -> {"p50": .., "p99": ..}
         self.feature_stats: dict[str, dict[str, dict[str, float]]] = {}
         self.meta: dict[str, object] = {"events_observed": 0}
@@ -86,6 +94,13 @@ class EnvironmentProfile:
                 ok = self._path_ok.setdefault(server, Counter())
                 if event.url_path in ok or len(ok) < _MAX_PATHS_PER_SERVER:
                     ok[event.url_path] += 1
+                client = event.source_ip or "?"
+                _note_client(self._path_clients.setdefault(server, {}), event.url_path,
+                             client, _MAX_PATHS_PER_SERVER)
+                kind = file_type(event.url_path)
+                if kind:
+                    _note_client(self._type_clients.setdefault(server, {}), kind, client,
+                                 _MAX_PATHS_PER_SERVER)
                 ext = _extension(event.url_path)
                 if ext:
                     self._ext_2xx.setdefault(server, Counter())[ext] += 1
@@ -139,6 +154,10 @@ class EnvironmentProfile:
         A profile saved before hidden segments were learned knows none, so
         every hidden segment reads as unserved.
         """
+        clients = self._type_clients.get(server)
+        if clients is not None:
+            return frozenset(t for t, c in clients.items() if _client_count(c)
+                             >= _SERVED_MIN_CLIENTS)
         hidden = self._hidden_2xx.get(server, Counter())
         return self.served_extensions(server) | frozenset(
             h for h, c in hidden.items() if c >= _SERVED_MIN_COUNT)
@@ -151,7 +170,12 @@ class EnvironmentProfile:
         very file whose first success matters most. A profile saved before
         this table existed knows no served paths.
         """
-        return bool(path) and self._path_ok.get(server, Counter()).get(path, 0) > 0
+        if not path:
+            return False
+        clients = self._path_clients.get(server)
+        if clients is not None:
+            return _client_count(clients.get(path, 0)) >= _SERVED_MIN_CLIENTS
+        return self._path_ok.get(server, Counter()).get(path, 0) > 0
 
     def population(self, usecase: str, feature: str) -> dict[str, float]:
         """Population stats for one feature — p50/p99 context for explanations."""
@@ -188,6 +212,8 @@ class EnvironmentProfile:
             "ext_2xx": {s: dict(c) for s, c in self._ext_2xx.items()},
             "hidden_2xx": {s: dict(c) for s, c in self._hidden_2xx.items()},
             "path_ok": {s: dict(c) for s, c in self._path_ok.items()},
+            "path_clients": self._path_clients,
+            "type_clients": self._type_clients,
             "feature_stats": self.feature_stats,
         }
         path.write_text(json.dumps(doc), encoding="utf-8")
@@ -204,6 +230,9 @@ class EnvironmentProfile:
         profile._ext_2xx = {s: Counter(c) for s, c in doc.get("ext_2xx", {}).items()}
         profile._hidden_2xx = {s: Counter(c) for s, c in doc.get("hidden_2xx", {}).items()}
         profile._path_ok = {s: Counter(c) for s, c in doc.get("path_ok", {}).items()}
+        if "path_clients" in doc:
+            profile._path_clients = doc["path_clients"]
+            profile._type_clients = doc.get("type_clients", {})
         profile.feature_stats = doc.get("feature_stats", {})
         return profile
 
@@ -244,3 +273,20 @@ def file_type(path: str | None) -> str | None:
     """What kind of file a request asks for: a hidden segment if it has one
     (``/.env`` -> ``.env``), otherwise its extension (``/a.sql`` -> ``sql``)."""
     return _hidden_segment(path) or (_extension(path) if path else None)
+
+
+def _note_client(table: dict, key: str, client: str, cap: int) -> None:
+    """Remember up to _SERVED_MIN_CLIENTS distinct clients per key, then a number."""
+    seen = table.get(key)
+    if seen is None:
+        if len(table) >= cap:
+            return
+        table[key] = [client]
+    elif isinstance(seen, list) and client not in seen:
+        seen.append(client)
+        if len(seen) >= _SERVED_MIN_CLIENTS:
+            table[key] = len(seen)
+
+
+def _client_count(seen: list | int) -> int:
+    return seen if isinstance(seen, int) else len(seen)

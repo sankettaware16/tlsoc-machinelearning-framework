@@ -58,7 +58,7 @@ def test_file_type_covers_hidden_paths() -> None:
 
 
 def test_profile_learns_served_hidden_segments_and_round_trips(tmp_path: Path) -> None:
-    known = [_ev(f"/.well-known/acme-{i}", seconds=i) for i in range(3)]
+    known = [_ev(f"/.well-known/acme-{i}", ip=f"10.0.1.{i}", seconds=i) for i in range(3)]
     p = _profile(known)
     assert ".well-known" in p.served_types("web01")
     assert "html" in p.served_types("web01") and ".env" not in p.served_types("web01")
@@ -67,7 +67,8 @@ def test_profile_learns_served_hidden_segments_and_round_trips(tmp_path: Path) -
     assert ".well-known" in EnvironmentProfile.load(tmp_path / "p.json").served_types("web01")
 
     legacy = json.loads((tmp_path / "p.json").read_text())
-    legacy.pop("hidden_2xx")
+    for table in ("hidden_2xx", "path_ok", "path_clients", "type_clients"):
+        legacy.pop(table)  # a profile saved before any of these existed
     (tmp_path / "old.json").write_text(json.dumps(legacy))
     old = EnvironmentProfile.load(tmp_path / "old.json")
     assert ".well-known" not in old.served_types("web01"), "older profiles know none"
@@ -83,13 +84,16 @@ def test_a_success_on_a_never_served_file_type_is_a_finding() -> None:
 
 
 def test_failures_served_types_and_known_paths_are_not_findings() -> None:
-    p = _profile([_ev("/legacy.cfg", 200, ip="10.0.0.1", seconds=s) for s in range(1)]
-                 + [_ev(f"/.well-known/k{i}", 200, ip="10.0.0.1", seconds=i) for i in range(3)])
+    # "Served" means 2xx to at least three different clients (review C8).
+    p = _profile([_ev("/legacy.cfg", 200, ip=f"10.0.0.{c}", seconds=c) for c in range(3)]
+                 + [_ev(f"/.well-known/k{i}", 200, ip=f"10.0.2.{i}", seconds=i)
+                    for i in range(3)])
+    # Distinct sizes, so the catch-all filter cannot be what removes them.
     ev = _evidence(p, [
-        _ev("/.env", 404),                         # probed, not found
-        _ev("/index.html", 200, seconds=1),        # a type this site serves
-        _ev("/.well-known/security.txt", 200, seconds=2),  # a served hidden segment
-        _ev("/legacy.cfg", 200, seconds=3),        # unserved type, but a known path
+        _ev("/.env", 404),                                         # probed, not found
+        _ev("/index.html", 200, seconds=1, size=1201),             # a served type
+        _ev("/.well-known/security.txt", 200, seconds=2, size=77),  # a served hidden segment
+        _ev("/legacy.cfg", 200, seconds=3, size=5150),             # a served path
     ])
     assert ev[0]["source_findings"] == []
 
@@ -230,3 +234,17 @@ def test_a_finding_overrides_crawler_suppression() -> None:
     scorer._apply_suppression(SimpleNamespace(evidence={"entity_annotations": ann},
                                               alert=plain))
     assert plain.delivered is False, "without a finding the crawler is suppressed as before"
+
+
+
+def test_one_attackers_successes_do_not_make_a_path_served() -> None:
+    """Review C8: a git dump (6,519 objects, one address) in a training window
+    must not teach the next profile that .git is served."""
+    dump = [_ev(f"/.git/objects/{i:02x}", 200, ip="143.198.179.38", seconds=i, size=100 + i)
+            for i in range(50)]
+    p = _profile(dump)
+    assert ".git" not in p.served_types("web01")
+    assert not p.path_served("web01", "/.git/objects/00")
+    ev = _evidence(p, [_ev("/x.php", 404, ip="198.51.100.4"),
+                       _ev("/.git/HEAD", 200, ip="198.51.100.4", seconds=1, size=21)])
+    assert ev[0]["source_findings"][0]["path"] == "/.git/HEAD"

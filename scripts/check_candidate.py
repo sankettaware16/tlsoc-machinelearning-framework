@@ -87,7 +87,7 @@ def score_through(uc_cls, bundle, stream, canary_events, memory=None) -> dict:
     if memory:
         # The live runtime's address memory (D-036): without it every address
         # "just appeared" and the rhythm features read cold in the replay.
-        builder.restore_address_memory(memory)
+        builder.restore_address_memory(memory, history_only=True)
 
     windows = fired = canary_windows = canary_fired = 0
     top: list[tuple[float, str, int]] = []
@@ -100,15 +100,19 @@ def score_through(uc_cls, bundle, stream, canary_events, memory=None) -> dict:
         for outcome, synthetic in zip(outcomes, flags, strict=True):
             if outcome is None:
                 continue
+            # Live fire rate counts real windows only; the canary is reported
+            # on its own (review 2026-10-22, C14: it used to make up the
+            # whole "live" rate of a sustained gate on a short replay).
+            if synthetic:
+                canary_windows += 1
+                canary_fired += int(outcome.fired)
+                continue
             windows += 1
-            canary_windows += int(synthetic)
             if outcome.fired:
                 fired += 1
-                canary_fired += int(synthetic)
                 fired_ips.add(outcome.entity.ip)
-                if not synthetic:
-                    top.append((outcome.fused_percentile, str(outcome.entity),
-                                outcome.evidence.get("event_count", 0)))
+                top.append((outcome.fused_percentile, str(outcome.entity),
+                            outcome.evidence.get("event_count", 0)))
 
     merged = sorted(list(stream) + list(canary_events), key=lambda e: e.timestamp)
     for event in merged:
@@ -251,6 +255,10 @@ def main() -> int:
     s, c = results["serving"], results["candidate"]
     notes: list[str] = []
     verdict = "PASS"
+    # A sustained gate cannot fire on a replay shorter than it: then the live
+    # fire-rate comparison measures nothing and must not read as a pass.
+    sustained = getattr(uc_cls, "SUSTAINED_WINDOWS", 1) * 5
+    rate_measured = span_h * 60 >= 2 * sustained
     if c["canary_windows"] and not c["canary_fired"]:
         verdict = "DO_NOT_APPROVE"
         notes.append("the candidate misses its own known-bad burst — lower volume "
@@ -266,6 +274,11 @@ def main() -> int:
         if not c["canary_windows"]:
             verdict = "WARN"
             notes.append("no canary windows produced — detection is unverified here")
+        if not rate_measured:
+            verdict = "WARN"
+            notes.append(f"the replay spans {span_h * 60:.0f} min, shorter than twice the "
+                         f"{sustained}-min sustained gate: the live fire rate was not "
+                         "measured — replay more (--limit) before approving")
         if c["rate_pct"] > s["rate_pct"]:
             verdict = "WARN"
             notes.append(f"candidate fires MORE ({c['rate_pct']:.3f}% vs "
@@ -313,6 +326,8 @@ def main() -> int:
                           "rate_pct": round(results[k]["rate_pct"], 4)}
                       for k in ("serving", "candidate")},
         "design_rate_pct": design,
+        "live_rate_measured": rate_measured,
+        "replay_minutes": round(span_h * 60, 1),
         "canary": {k: {"windows": results[k]["canary_windows"],
                        "fired": results[k]["canary_fired"]}
                    for k in ("serving", "candidate")},
