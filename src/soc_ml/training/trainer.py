@@ -23,6 +23,7 @@ from typing import Any
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.core.contracts import Event
 from soc_ml.core.plugins import UseCase
+from soc_ml.core.provenance import code_commit
 from soc_ml.features import window_features as _wf
 from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.fusion.calibration import PercentileCalibrator
@@ -168,6 +169,8 @@ def train_bundle(
         # Reproducibility anchor: which feature code produced these vectors —
         # every module of the feature package, in stable order.
         "feature_code_sha256": _feature_code_sha256(),
+        # ...and which code commit: both are needed to reproduce a bundle (FR-53).
+        "code_commit": code_commit(),
     }
 
     # Bounded per-feature reference for PSI drift detection (from the cleaned,

@@ -322,9 +322,25 @@ class DashboardState:
                     status = "pending"
                 else:
                     status = "retained"
+                report = self.registry.approval(slug, version) or {}
+                verdict = report.get("verdict")
                 versions.append({
                     "version": version,
                     "status": status,
+                    # The recorded verdict behind the button (FR-55, D-035): the
+                    # registry refuses a promotion without PASS/WARN checked
+                    # against the bundle serving now; the console says so first.
+                    "approval": {
+                        "verdict": verdict,
+                        "serving_checked": report.get("serving"),
+                        "generated_at": report.get("generated_at"),
+                        "notes": report.get("notes") or [],
+                    } if report else None,
+                    "promotable": status != "approved" and (
+                        current is None
+                        or (verdict in ("PASS", "WARN") and report.get("serving") == current)
+                    ),
+                    "promotion": meta.get("promotion"),
                     # Bundle metadata keys, as written by ModelBundle.save.
                     "trained_at": meta.get("created_at"),
                     "train_windows": meta.get("train_windows"),

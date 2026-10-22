@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from soc_ml.registry.store import PromotionRefused
 from soc_ml.web.server import build_server, serve_in_thread
 from soc_ml.web.state import DashboardState
 
@@ -30,7 +31,7 @@ def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True
 
     # Health age must be relative to *this call*, not module import: on a
     # loaded machine the suite can take longer than the 60s liveness window.
-    stamp = (datetime.now(timezone.utc) - timedelta(seconds=health_age_s)).isoformat()
+    stamp = (datetime.now(UTC) - timedelta(seconds=health_age_s)).isoformat()
     (state / "web_recon_health.json").write_text(json.dumps({
         "timestamp": stamp, "usecase": "web_recon", "mode": "live",
         "bundle_version": "v20260806T124821", "uptime_s": 90000.0, "eps": 12.3,
@@ -76,6 +77,10 @@ def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True
     (models / "current").write_text("v20260806T124821")
     if candidate:
         (models / "candidate").write_text("v20260818T090000")
+        # What scripts/check_candidate.py records; without it promotion is refused.
+        (models / "v20260818T090000" / "approval_check.json").write_text(json.dumps({
+            "verdict": "PASS", "serving": "v20260806T124821",
+            "generated_at": "2026-08-18T10:00:00+00:00", "notes": []}))
     return root
 
 
@@ -281,3 +286,22 @@ def test_promote_without_a_candidate_is_a_clean_conflict(server) -> None:
     st.registry.promote("web_recon", "v20260818T090000")  # consumes the candidate
     code, body = _post(base + "/api/models/promote", {"slug": "web_recon"})
     assert code == 409 and "candidate" in body["error"]
+
+
+
+def test_the_console_shows_the_verdict_and_refuses_without_one(tmp_path: Path) -> None:
+    root = _deployment(tmp_path)
+    (root / "models" / "web_recon" / "v20260818T090000" / "approval_check.json").unlink()
+    st = DashboardState(root)
+    by_version = {v["version"]: v for v in st.models()["usecases"][0]["versions"]}
+    assert by_version["v20260818T090000"]["approval"] is None
+    assert by_version["v20260818T090000"]["promotable"] is False
+    with pytest.raises(PromotionRefused):
+        st.promote("web_recon", "v20260818T090000")
+    assert st.registry.current_version("web_recon") == "v20260806T124821"
+
+
+def test_a_passing_verdict_is_shown_and_promotable(tmp_path: Path) -> None:
+    st = DashboardState(_deployment(tmp_path))
+    v = {v["version"]: v for v in st.models()["usecases"][0]["versions"]}["v20260818T090000"]
+    assert v["approval"]["verdict"] == "PASS" and v["promotable"] is True
