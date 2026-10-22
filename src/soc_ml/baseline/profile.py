@@ -8,6 +8,9 @@ Everything a detector compares data against comes from here, never from config
 * **served extensions** → the set of file extensions this app actually serves
   with success, so requests for ``.env`` / ``.sql`` / ``.bak`` on an app that
   serves none stand out (``web.unknown_ext_ratio``)
+* **served hidden segments** → which dot-segments (``.well-known``) the app
+  serves with success. ``/.env`` and ``/.git/config`` have no extension, so
+  without this the most sensitive probes have no file type at all (D-034)
 * **feature stats** (median / p99 per feature) → population context for
   explanations ("value 47, this server's p50 is 1, p99 is 3") and the
   population-median deltas the spec's features call for
@@ -56,6 +59,8 @@ class EnvironmentProfile:
         self._ua_total: dict[str, int] = {}
         # server -> Counter(ext -> 2xx occurrences)
         self._ext_2xx: dict[str, Counter] = {}
+        # server -> Counter(hidden segment -> 2xx occurrences), e.g. ".well-known"
+        self._hidden_2xx: dict[str, Counter] = {}
         # usecase -> feature -> {"p50": .., "p99": ..}
         self.feature_stats: dict[str, dict[str, dict[str, float]]] = {}
         self.meta: dict[str, object] = {"events_observed": 0}
@@ -74,9 +79,13 @@ class EnvironmentProfile:
                 table[event.url_path] += 1
             self._path_total[server] = self._path_total.get(server, 0) + 1
 
-            ext = _extension(event.url_path)
-            if ext and event.status_code and 200 <= event.status_code < 300:
-                self._ext_2xx.setdefault(server, Counter())[ext] += 1
+            if event.status_code and 200 <= event.status_code < 300:
+                ext = _extension(event.url_path)
+                if ext:
+                    self._ext_2xx.setdefault(server, Counter())[ext] += 1
+                hidden = _hidden_segment(event.url_path)
+                if hidden:
+                    self._hidden_2xx.setdefault(server, Counter())[hidden] += 1
 
         if event.user_agent:
             table = self._ua_freq.setdefault(server, Counter())
@@ -118,6 +127,21 @@ class EnvironmentProfile:
         table = self._ext_2xx.get(server, Counter())
         return frozenset(e for e, c in table.items() if c >= _SERVED_MIN_COUNT)
 
+    def served_types(self, server: str) -> frozenset[str]:
+        """File types this server serves: extensions plus hidden segments.
+
+        A profile saved before hidden segments were learned knows none, so
+        every hidden segment reads as unserved; ``path_seen`` still clears
+        any exact path the server was seen serving.
+        """
+        hidden = self._hidden_2xx.get(server, Counter())
+        return self.served_extensions(server) | frozenset(
+            h for h, c in hidden.items() if c >= _SERVED_MIN_COUNT)
+
+    def path_seen(self, server: str, path: str | None) -> bool:
+        """Was this exact path requested on this server during training?"""
+        return bool(path) and self._path_df.get(server, Counter()).get(path, 0) > 0
+
     def population(self, usecase: str, feature: str) -> dict[str, float]:
         """Population stats for one feature — p50/p99 context for explanations."""
         return self.feature_stats.get(usecase, {}).get(feature, {})
@@ -151,6 +175,7 @@ class EnvironmentProfile:
             "ua_freq": {s: dict(c) for s, c in self._ua_freq.items()},
             "ua_total": self._ua_total,
             "ext_2xx": {s: dict(c) for s, c in self._ext_2xx.items()},
+            "hidden_2xx": {s: dict(c) for s, c in self._hidden_2xx.items()},
             "feature_stats": self.feature_stats,
         }
         path.write_text(json.dumps(doc), encoding="utf-8")
@@ -165,6 +190,7 @@ class EnvironmentProfile:
         profile._ua_freq = {s: Counter(c) for s, c in doc.get("ua_freq", {}).items()}
         profile._ua_total = {s: int(v) for s, v in doc.get("ua_total", {}).items()}
         profile._ext_2xx = {s: Counter(c) for s, c in doc.get("ext_2xx", {}).items()}
+        profile._hidden_2xx = {s: Counter(c) for s, c in doc.get("hidden_2xx", {}).items()}
         profile.feature_stats = doc.get("feature_stats", {})
         return profile
 
@@ -189,3 +215,19 @@ def _extension(path: str) -> str | None:
     # An "extension" of 10+ chars is almost always a version tag or a hash,
     # not a file type.
     return ext if 1 <= len(ext) <= 9 and ext.isalnum() else None
+
+
+def _hidden_segment(path: str | None) -> str | None:
+    """First dot-led segment of a URL path, lowercased: ``/.git/config`` -> ``.git``."""
+    if not path:
+        return None
+    for seg in path.split("?", 1)[0].split("#", 1)[0].split("/"):
+        if len(seg) > 1 and seg.startswith(".") and seg not in ("..",):
+            return seg.lower()[:32]
+    return None
+
+
+def file_type(path: str | None) -> str | None:
+    """What kind of file a request asks for: a hidden segment if it has one
+    (``/.env`` -> ``.env``), otherwise its extension (``/a.sql`` -> ``sql``)."""
+    return _hidden_segment(path) or (_extension(path) if path else None)

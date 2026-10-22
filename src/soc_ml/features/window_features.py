@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from soc_ml.baseline.profile import EnvironmentProfile, _extension
+from soc_ml.baseline.profile import EnvironmentProfile, _extension, file_type
 from soc_ml.core.contracts import EntityKey, Event, FeatureVector
 from soc_ml.features.bot_features import (
     BotWindowState,
@@ -67,6 +67,7 @@ _MAX_OPEN_WINDOWS = 250_000  # hard guard against a badly unsorted feed
 _MAX_TRACKED_ENTITIES = 200_000  # cross-window entity-memory cap
 _SWEEP_EVERY = 1000  # events between watermark sweeps
 _MAX_SOURCE_UAS = 256  # per-(server, ip, bucket) cap on distinct user-agents
+_MAX_FINDINGS = 10  # successes on never-served file types kept per address-bucket
 
 
 @dataclass(slots=True)
@@ -107,6 +108,9 @@ class _SourceAgg:
     ua_hashes: set = field(default_factory=set)
     paths: set = field(default_factory=set)
     open_windows: int = 0
+    #: Requests that *succeeded* on a file type this server never serves, at
+    #: a path it was never seen serving: what a scan found (D-034).
+    findings: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -149,6 +153,7 @@ class WindowFeatureBuilder:
         # address in that bucket. Lives exactly as long as the bucket's
         # windows are open; released when the last of them closes.
         self._sources: dict[tuple[str, str, int], _SourceAgg] = {}
+        self._served_types: dict[str, frozenset[str]] = {}
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -193,6 +198,11 @@ class WindowFeatureBuilder:
             source.ua_hashes.add(event.entity.ua_hash)
         if event.url_path and len(source.paths) < _MAX_DISTINCT_PATHS:
             source.paths.add(event.url_path)
+        if (len(source.findings) < _MAX_FINDINGS and self._is_finding(event)
+                and all(f["path"] != event.url_path for f in source.findings)):
+            source.findings.append({"path": event.url_path,
+                                    "status": event.status_code,
+                                    "bytes": event.body_bytes})
 
         self._since_sweep += 1
         if self._since_sweep >= _SWEEP_EVERY:
@@ -226,6 +236,26 @@ class WindowFeatureBuilder:
         return len(self._open)
 
     # ------------------------------------------------------------------ #
+
+    def _is_finding(self, event: Event) -> bool:
+        """A success on a never-served file type at a never-seen path.
+
+        Both halves are learned: the profile knows which file types this
+        server serves and which paths it was seen serving. A scanner hitting
+        ordinary pages finds nothing; one served ``/web.config`` found
+        something (elkcc, 2026-10-12, D-034).
+        """
+        status = event.status_code or 0
+        if not 200 <= status < 300:
+            return False
+        kind = file_type(event.url_path)
+        if kind is None:
+            return False
+        server = event.entity.server
+        served = self._served_types.get(server)
+        if served is None:
+            served = self._served_types[server] = self.profile.served_types(server)
+        return kind not in served and not self.profile.path_seen(server, event.url_path)
 
     def _source_for(self, entity: EntityKey, bucket: int) -> _SourceAgg:
         key = (entity.server, entity.ip, bucket)
@@ -367,6 +397,7 @@ class WindowFeatureBuilder:
             "source_event_count": source.count,
             "source_ua_count": len(source.ua_hashes),
             "source_distinct_paths": len(source.paths),
+            "source_findings": list(source.findings),
             # Identity context for UC-04's gate and the crawler export —
             # evidence, deliberately never model input (models learn behavior,
             # not IP ranges).

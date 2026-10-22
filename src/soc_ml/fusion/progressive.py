@@ -22,10 +22,12 @@ low" (§7). This stage implements it at the delivery layer, per address:
 
 Measured on the week's real fires: 3,009 addresses/day firing → 3.9 queued
 alerts/day (range 1-6), all of them 30-minute sustained scanners. The price,
-stated: a scanner that finishes inside one burst never reaches the queue (it
-is a low candidate in the digest), and a sustained one reaches the queue 30
-minutes after it began. A burst that *succeeds* (hits on rare paths) should
-escalate — that is the spec's context band, not wired yet (D-033).
+stated: a scanner that finishes inside one burst and finds nothing never
+reaches the queue (it is a low candidate in the digest), and a sustained one
+reaches the queue 30 minutes after it began. A scan that *finds* something —
+a success on a file type the site never serves, at a path it was never seen
+serving — is queued at once with no ceiling: the spec's "transition-to-
+success" context band (D-034).
 
 These constants are the specification's time horizons and severity bands, not
 data thresholds (FR-62): nothing here is compared against a learned quantity.
@@ -61,6 +63,8 @@ class ProgressionStep:
     #: "episode" (address already queued today) or "source" (another
     #: user-agent of an address already represented in this window).
     folded_by: str | None = None
+    #: Queued at once because the scan *found* something (D-034).
+    escalated: bool = False
 
 
 @dataclass(slots=True)
@@ -77,7 +81,7 @@ class Progression:
         self._episodes: dict[tuple[str, str], _Episode] = {}
         # (server, ip) -> (event-time day, delivered alert id)
         self._queued: dict[tuple[str, str], tuple[str, str]] = {}
-        self.stats = {"delivered": 0, "folded": 0, "candidates": 0}
+        self.stats = {"delivered": 0, "folded": 0, "candidates": 0, "escalated": 0}
 
     def decide(self, alert: Alert) -> ProgressionStep:
         """Advance the address's episode, cap the alert's severity, choose an action.
@@ -99,6 +103,11 @@ class Progression:
             episode.window_alert = None
 
         stage, ceiling = _stage(episode.windows)
+        # A scan that got a never-served file type back is not a weak signal,
+        # however short: no ceiling, straight to the queue (D-034).
+        found = bool(alert.links.get("findings"))
+        if found:
+            stage, ceiling = Severity.from_score(alert.severity_score), 100
         if alert.severity_score > ceiling:
             alert.severity_score = ceiling
             alert.severity = Severity.from_score(ceiling)
@@ -108,6 +117,7 @@ class Progression:
             "episode_windows": episode.windows,
             "episode_started": episode.started.isoformat(),
             "episode_minutes": minutes,
+            **({"escalated_by": "finding"} if found else {}),
         }
 
         queued = self._queued.get(key)
@@ -120,6 +130,12 @@ class Progression:
             return ProgressionStep("fold", stage, episode.windows, episode.started,
                                    folded_into=episode.window_alert, folded_by="source")
         episode.window_alert = alert.id
+        if found:
+            self._queued[key] = (day, alert.id)
+            self.stats["delivered"] += 1
+            self.stats["escalated"] += 1
+            return ProgressionStep("deliver", stage, episode.windows, episode.started,
+                                   escalated=True)
         if stage is QUEUE_STAGE:
             self._queued[key] = (day, alert.id)
             if alert.narrative:
