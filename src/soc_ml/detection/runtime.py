@@ -77,6 +77,27 @@ _DRIFT_RESERVOIR = 4000  # live feature values retained per feature for PSI
 _ADDRESS_MEMORY_EVERY_S = 600.0  # persist address memory (MBs) far less often than offsets
 
 
+def resolve_timezone(name: str | None) -> tzinfo:
+    """An IANA name, "UTC", or "local" — the host's *named* zone.
+
+    "local" must keep its DST rules: a fixed offset read at start would move
+    the day boundary by an hour after a DST change (review 2026-10-22, C4).
+    """
+    if name and name != "local":
+        return ZoneInfo(name)
+    try:
+        return ZoneInfo(Path("/etc/timezone").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError, KeyError):
+        pass
+    target = os.path.realpath("/etc/localtime")
+    if "zoneinfo/" in target:
+        try:
+            return ZoneInfo(target.split("zoneinfo/", 1)[1])
+        except (ValueError, KeyError):
+            pass
+    return datetime.now().astimezone().tzinfo or UTC
+
+
 class RuntimeConfig:
     """Everything the runtime needs to run one set of use cases."""
 
@@ -125,9 +146,7 @@ class RuntimeConfig:
 
     @property
     def tz(self) -> tzinfo:
-        if self.timezone_name == "local":
-            return datetime.now().astimezone().tzinfo or UTC
-        return ZoneInfo(self.timezone_name)
+        return resolve_timezone(self.timezone_name)
 
     @property
     def set_key(self) -> str:
@@ -439,7 +458,8 @@ class DetectionRuntime:
                 if step.folded_by == "source":
                     runner.stats["alerts_folded_by_source"] += 1
                 return "folded", {**detail, "folded_by": step.folded_by,
-                                  "folded_into": step.folded_into}
+                                  "folded_into": step.folded_into,
+                                  "into_finding": step.into_finding}
             if step.action == "candidate":
                 self._digest(runner, outcome.alert,
                              reason=f"progressive candidate ({step.stage.value}, "
@@ -460,7 +480,12 @@ class DetectionRuntime:
                 return "folded", {"folded_by": decision.folded_by,
                                   "folded_into": decision.folded_into}
         # 2. Cap daily delivery per server; overflow -> digest, never dropped.
-        if runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
+        #    A finding is not capped: it is rare (one in ~600k events on elkcc)
+        #    and on 2026-10-21 a real git dump was digested because three
+        #    ordinary alerts had used the day (D-034, review C2).
+        if detail.get("escalated_by") == "finding":
+            detail = {**detail, "budget": "bypassed: finding"}
+        elif runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
             self._digest(runner, outcome.alert)
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1

@@ -13,7 +13,8 @@ question: >
   without the delivery cap doing the work — while still queueing what matters?
 deployment: elkcc (10.204.60.11), use cases bot_detection,web_recon, --mode live,
   --daily-budget 3, local day Asia/Kolkata
-code: build afad343 or later; web_recon serving bundle v20261012T132802
+code: the build deployed on 2026-10-22 before 23:59 IST (commit recorded in
+  the verdict); web_recon serving bundle v20261012T132802
 window:
   start: 2026-10-23T00:00:00+05:30
   end:   2026-10-30T00:00:00+05:30     # seven full local days
@@ -31,15 +32,22 @@ definitions:
   day: local calendar day in Asia/Kolkata
 hypotheses:   # one-sided: fewer queued alerts is never a failure
   H1: queued <= 3 per day per server on at least 5 of the 7 days
-  H2: every fire escalated by a finding (escalated_by: finding) was queued
-  H3: every one-window fire that was not escalated is a digested candidate
-      carrying its stage
-  H4: zero watchdog restarts ("runtime not running") and zero tracebacks in
-      the window; operator restarts for deploys do not count
+  H2: every fire whose score row records findings (findings > 0, written
+      before and regardless of delivery) was queued, or folded into an alert
+      that itself carried a finding (into_finding: true)
+  H3: every one-window fire without a finding that was not folded is a
+      digested candidate carrying its stage AND appears in
+      web_recon_digest.ndjson (entity + window end) with a progressive-
+      candidate reason — checked against the digest file, not the score log
+  H4: zero watchdog restarts ("runtime not running") and zero tracebacks
+      inside the window; runtime.log lines are timestamped from this build,
+      and a traceback is placed at the last timestamped line before it
 not_testable: >
-  H2 is not testable if nothing was escalated; H3 if there was no one-window
-  fire; H1 if fewer than 7 days of the window have elapsed or the score log
-  is missing days. "Not testable" is reported as such, never as a pass.
+  H1 is not testable before the window has closed, or if any local day of the
+  window has no score rows at all ("the score log is missing days" — an empty
+  day is never a passing day). H2 is not testable if no fire carried a
+  finding; H3 if there was no one-window fire; H4 before the window closes.
+  "Not testable" is reported as such, never as a pass.
 allowed_during_window: >
   operator restarts; bot_detection model or code changes that touch only its
   own alert path (D-032 redesign). Any change to web_recon's scoring, features
@@ -54,6 +62,19 @@ informational: fires per day; gate fire share per local hour vs design;
 ```
 
 ---
+
+## Revisions before the window opened
+
+An adversarial review of the day's changes (2026-10-22, five reviewers, two
+skeptics per finding) found that the first version of this document and its
+script could not fail: H1 counted empty or not-yet-elapsed days as passing
+days; H2 and H3 selected their population by fields that only the branch under
+test writes; H4 counted tracebacks from before the window. It also found two
+web_recon delivery defects that H2 is about: a finding folded into an earlier
+alert that had none, and findings competing with ordinary alerts for the daily
+cap. All were fixed, with tests that fail on the earlier code, and deployed
+before the window opened. The hypotheses above are the revised ones; their
+intent is unchanged.
 
 ## Verdict
 

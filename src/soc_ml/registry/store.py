@@ -248,21 +248,41 @@ class ModelRegistry:
             f"{usecase}: refusing to promote {version}: {why} "
             f"(an operator may override with --force --reason)")
 
-    def rollback(self, usecase: str) -> str:
-        """Repoint ``current`` to the version it displaced.
+    def rollback_target(self, usecase: str) -> str | None:
+        """Where ``rollback`` would go, or None: only a version that has served.
 
-        The displaced version is recorded at promotion. "The newest other
-        version" is only a fallback for bundles promoted before that record
-        existed: it can be a never-served candidate.
+        First the version the serving bundle displaced (recorded at promotion);
+        otherwise the most recently promoted other version. Never the pending
+        candidate and never a version without a promotion record — rollback is
+        not a way around the approval gate (review 2026-10-22, C6/C17: the old
+        "newest other version" fallback could serve a DO_NOT_APPROVE candidate).
         """
         current = self.current_version(usecase)
-        target = (self.metadata(usecase, current) or {}).get("rollback_target") \
-            if current else None
-        if not target or not self.bundle_dir(usecase, target).is_dir():
-            others = [v for v in self.versions(usecase) if v != current]
-            if not others:
-                raise ValueError(f"{usecase}: no earlier version to roll back to")
-            target = others[-1]
+        if current is None:
+            return None
+        target = (self.metadata(usecase, current) or {}).get("rollback_target")
+        if target and target != current and self.bundle_dir(usecase, target).is_dir():
+            return target
+        candidate = self.candidate_version(usecase)
+        served = []
+        for version in self.versions(usecase):
+            if version in (current, candidate):
+                continue
+            promo = (self.metadata(usecase, version) or {}).get("promotion")
+            if promo:
+                served.append((str(promo.get("at") or ""), version))
+        return max(served)[1] if served else None
+
+    def rollback(self, usecase: str) -> str:
+        """Repoint ``current`` to a version that has served before (see rollback_target)."""
+        current = self.current_version(usecase)
+        target = self.rollback_target(usecase)
+        if target is None:
+            raise ValueError(
+                f"{usecase}: no recorded earlier serving version to roll back to — "
+                f"promote one explicitly (it needs an approval check, or --force --reason)")
+        self.update_metadata(usecase, target, rolled_back_to={
+            "at": datetime.now(UTC).isoformat(), "from": current})
         self._write_pointer(usecase, "current", target)
         return target
 

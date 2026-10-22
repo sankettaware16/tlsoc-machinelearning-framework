@@ -195,3 +195,71 @@ def test_a_lone_burst_stays_a_visible_candidate(tmp_path: Path) -> None:
     mine = [d for d in digest if "203.0.113.52" in d["entity"]]
     assert mine and all(d["severity"] == "low" for d in mine)
     assert all("progressive candidate (low, 1 window(s))" in d["reason"] for d in mine)
+
+
+# ------------- review 2026-10-22: C1 (findings never folded away), C2 ------------ #
+
+
+def _with_finding(a):
+    a.links["findings"] = [{"path": "/.git/config", "status": 200, "bytes": 311}]
+    return a
+
+
+def test_a_finding_is_not_folded_into_a_queued_alert_that_had_none() -> None:
+    from zoneinfo import ZoneInfo
+    p = Progression(tz=ZoneInfo("Asia/Kolkata"))
+    for k in range(6):                       # morning: a plain sustained scanner
+        p.decide(_fire(minutes=5 * k))
+    evening = _with_finding(_fire(minutes=12 * 60))
+    step = p.decide(evening)
+    assert step.action == "deliver" and step.escalated, "the success reaches the queue"
+    again = _with_finding(_fire(minutes=12 * 60 + 5))
+    later = p.decide(again)
+    assert later.action == "fold" and later.into_finding, "folds only into an alert with one"
+
+
+def test_a_finding_from_another_user_agent_in_the_same_window_is_not_lost() -> None:
+    p = Progression()
+    assert p.decide(_fire(ua="a")).action == "candidate"
+    step = p.decide(_with_finding(_fire(ua="b")))
+    assert step.action == "deliver" and step.escalated
+
+
+def test_an_episode_running_across_midnight_is_not_queued_twice() -> None:
+    from zoneinfo import ZoneInfo
+    ist = ZoneInfo("Asia/Kolkata")
+    p = Progression(tz=ist)
+    # _fire's clock starts at 08:00 UTC = 13:30 IST; +600 min is 23:30 IST.
+    fires = [_fire(minutes=600 + 5 * k) for k in range(16)]
+    days = {f.timestamp.astimezone(ist).date() for f in fires}
+    assert len(days) == 2, "the episode really crosses the local midnight"
+    steps = [p.decide(f) for f in fires]
+    delivered = [s for s in steps if s.action == "deliver"]
+    assert len(delivered) == 1, "one alert for one continuous scanner, midnight or not"
+
+
+def test_a_finding_bypasses_the_daily_cap(tmp_path: Path) -> None:
+    from soc_ml.detection.runtime import DetectionRuntime, RuntimeConfig
+    from tests.test_findings import _burst
+    rt = _run_with_budget(tmp_path, _burst(found=True), budget=0)
+    rows = [r for r in _rows(tmp_path / "state" / "web_recon_scores.ndjson")
+            if "203.0.113.60" in r["entity"]]
+    assert rows[0]["disposition"] == "delivered" and rows[0]["budget"] == "bypassed: finding"
+    assert rows[0]["findings"] == 1
+    _ = (DetectionRuntime, RuntimeConfig, rt)
+
+
+def _run_with_budget(tmp_path: Path, attack: list[Event], budget: int):
+    bundle = train_bundle(WebRecon, usecase_model_factories(WebRecon),
+                          lambda: iter(_benign()), source_desc="benign only")
+    registry = ModelRegistry(tmp_path)
+    registry.save_bundle(bundle)
+    registry.promote("web_recon", bundle.version)
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", sorted(_benign() + attack, key=lambda e: e.timestamp))
+    rt = DetectionRuntime(RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                                        follow=False, daily_alert_budget=budget),
+                          log=lambda *_: None)
+    assert rt.run() == 0
+    return rt

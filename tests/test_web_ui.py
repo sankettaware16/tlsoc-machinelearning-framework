@@ -114,7 +114,9 @@ def test_models_marks_approval_status(tmp_path: Path) -> None:
     assert by_status["v20260806T124821"] == "approved"
     assert by_status["v20260818T090000"] == "pending"
     assert by_status["v20260101T000000"] == "retained"
-    assert uc["can_rollback"] is True
+    # No version here carries a record of having served (bundles from before
+    # promotions were recorded), so there is nowhere safe to roll back to.
+    assert uc["can_rollback"] is False and uc["rollback_target"] is None
 
 
 def test_version_provenance_is_read_from_real_metadata_keys(tmp_path: Path) -> None:

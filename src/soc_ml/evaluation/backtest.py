@@ -78,6 +78,7 @@ def run_backtest(
     out_dir: str | Path = "data",
     inject_canary: bool = True,
     top_n: int = 5,
+    timezone_name: str = "UTC",
 ) -> dict[str, Any]:
     try:
         uc_cls = plugin_registry.get("usecase", usecase)
@@ -128,7 +129,9 @@ def run_backtest(
     scorer = Scorer(uc_cls, bundle, EntityAnnotations())
     builder = WindowFeatureBuilder(bundle.profile)
     dedup = AlertDeduplicator()
-    progression = Progression() if uc_cls.progressive else None
+    from soc_ml.detection.runtime import resolve_timezone
+    progression = (Progression(tz=resolve_timezone(timezone_name))
+                   if uc_cls.progressive else None)
 
     reports_dir = out_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)

@@ -420,6 +420,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             out_dir=args.out,
             inject_canary=not args.no_canary,
             top_n=args.top,
+            timezone_name=args.timezone,
         )
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
@@ -573,7 +574,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         timezone_name=tz_name,
     )
     try:
-        return DetectionRuntime(rc).run()
+        # Timestamped lines: a traceback in runtime.log can then be placed in
+        # time (M-001 H4 counts only those inside its window).
+        def stamped(message: str) -> None:
+            from datetime import UTC, datetime
+            print(f"{datetime.now(UTC).isoformat(timespec='seconds')} {message}", flush=True)
+
+        return DetectionRuntime(rc, log=stamped).run()
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 2
@@ -705,6 +712,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-canary", action="store_true",
                    help="skip the synthetic detection canary")
     b.add_argument("--top", type=int, default=5, help="top alerts to show")
+    b.add_argument("--timezone", default="local",
+                    help="the day once-per-day folds count in, as `run` (default: local)")
     b.set_defaults(func=cmd_backtest)
 
     tr = sub.add_parser("train", help="train a model bundle from historical logs and register it")

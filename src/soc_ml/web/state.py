@@ -373,8 +373,10 @@ class DashboardState:
                 "serving": current,
                 "candidate": candidate,
                 "running_feature_code": running_hash,
-                "can_rollback": len([v for v in self.registry.versions(slug)
-                                     if v != current]) > 0,
+                # Only to a version that has served (never a pending or
+                # unapproved candidate) — the registry's rule, shown here.
+                "can_rollback": self.registry.rollback_target(slug) is not None,
+                "rollback_target": self.registry.rollback_target(slug),
                 "versions": versions,
             })
         return {"usecases": out}

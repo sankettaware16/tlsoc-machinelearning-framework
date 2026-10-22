@@ -71,6 +71,12 @@ class ScoreResult:
             # invisibility here is how a mis-scoped politeness check hid on
             # production traffic (D-023).
             row["downweighted_by"] = self.alert.links["downweighted_by"]
+        if self.alert is not None and self.alert.links.get("findings"):
+            # Recorded whatever delivery then decides, so "every finding was
+            # queued" is a question the score log can answer (M-001 H2).
+            row["findings"] = len(self.alert.links["findings"])
+        if self.alert is not None and "suppression_overridden" in self.alert.links:
+            row["suppression_overridden"] = self.alert.links["suppression_overridden"]
         return row
 
 
@@ -189,6 +195,12 @@ class Scorer:
             return
         kind, reason = decision
         alert = out.alert
+        if kind == "suppress" and alert.links.get("findings"):
+            # A finding means the file is public, whoever fetched it: a
+            # verified crawler getting /.env back is an exposure, not a
+            # false positive (review 2026-10-22). Recorded, never silent.
+            alert.links["suppression_overridden"] = f"finding overrides: {reason}"
+            return
         if kind == "suppress":
             alert.suppressed_by = reason
             alert.delivered = False
