@@ -19,11 +19,11 @@ closes the gap has to come here and say so deliberately.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from soc_ml.usecases import BotDetection, WebRecon
 
-T0 = datetime(2026, 8, 16, 22, 44, 0, tzinfo=timezone.utc)  # burst 1, in UTC
+T0 = datetime(2026, 8, 16, 22, 44, 0, tzinfo=UTC)  # burst 1, in UTC
 
 
 def _flood_evidence(entity: str, window_end: datetime) -> dict:

@@ -7,19 +7,18 @@ the next scorer's evidence carries it.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.core.contracts import EntityKey, Event, Observer
+from soc_ml.core.plugins import usecase_model_factories
 from soc_ml.detection.annotations import EntityAnnotations
-from soc_ml.detection.scorer import ScoreResult, Scorer
+from soc_ml.detection.scorer import Scorer, ScoreResult
 from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.training.trainer import train_bundle
 from soc_ml.usecases.bot_detection import BotDetection
 
-from soc_ml.core.plugins import usecase_model_factories
-
-T0 = datetime(2026, 7, 20, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 20, 8, 0, 0, tzinfo=UTC)
 
 GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 

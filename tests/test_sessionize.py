@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from soc_ml.core.contracts import Event, Observer
 from soc_ml.preprocess import Sessionizer, session_features
 
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 
 
 def ev(

@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -84,8 +84,8 @@ def _age_s(stamp: str | None) -> float | None:
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - when).total_seconds()
+        when = when.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - when).total_seconds()
 
 
 class DashboardState:
@@ -246,7 +246,7 @@ class DashboardState:
 
         live = newest_age is not None and newest_age < _LIVE_WINDOW_S
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "data_root": str(self.data_root.resolve()),
             "runtime": {
                 "live": live,

@@ -26,7 +26,7 @@ import math
 from collections import Counter, deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from soc_ml.baseline.profile import EnvironmentProfile, _extension, file_type
@@ -178,7 +178,7 @@ class WindowFeatureBuilder:
         self.stats["events"] += 1
         ts = event.timestamp
         if ts.tzinfo is None:  # defensive: contract requires UTC-aware
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
 
         if self._watermark is None or ts > self._watermark:
             self._watermark = ts
@@ -195,7 +195,7 @@ class WindowFeatureBuilder:
                 return
             window = _OpenWindow(
                 entity=event.entity,
-                start=datetime.fromtimestamp(bucket * self.window_s, tz=timezone.utc),
+                start=datetime.fromtimestamp(bucket * self.window_s, tz=UTC),
             )
             self._open[key] = window
             self._source_for(event.entity, bucket).open_windows += 1

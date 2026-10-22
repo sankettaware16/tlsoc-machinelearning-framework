@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from soc_ml.core.contracts import Alert, EntityKey, Event, Observer, Severity
@@ -12,7 +12,7 @@ from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.runtime import DetectionRuntime, RuntimeConfig
 from soc_ml.drift.psi import DriftReport, population_stability_index
 
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 
 
 def alert(ip: str = "1.1.1.1", offset_s: float = 0, server: str = "web01",

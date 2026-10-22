@@ -8,7 +8,7 @@ any registered slug through the plugin registry instead of a hardcoded map.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,7 @@ from soc_ml.core.contracts import Event, Observer
 from soc_ml.detection.runtime import DetectionRuntime, RuntimeConfig
 from soc_ml.usecases import WebRecon, dependency_order
 
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 
 
 # ------------------------- dependency ordering ------------------------- #

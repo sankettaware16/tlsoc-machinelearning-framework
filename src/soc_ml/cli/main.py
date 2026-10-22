@@ -460,11 +460,11 @@ def cmd_train(args: argparse.Namespace) -> int:
     """Train a model bundle from historical logs and register it (FR-53)."""
     from datetime import datetime
 
+    import soc_ml.models  # noqa: F401
     from soc_ml.core.plugins import usecase_model_factories
     from soc_ml.ingest.file import FileSource
     from soc_ml.registry.store import ModelRegistry
     from soc_ml.training.trainer import TrainingError, train_bundle
-    import soc_ml.models  # noqa: F401
 
     slug = args.uc.replace("-", "_")
     uc_cls = _resolve_usecase(slug)

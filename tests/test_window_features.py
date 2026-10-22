@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.core.contracts import Event, Observer
@@ -14,7 +14,7 @@ from soc_ml.features.window_features import (
 )
 
 # Aligned to a 5-minute boundary so one burst = exactly one window.
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 
 
 def ev(offset_s: float = 0, path: str = "/", status: int = 200,

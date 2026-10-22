@@ -11,7 +11,7 @@ bot_detection keeps across windows and the annotations web_recon reads.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from soc_ml.core.contracts import Event, Observer
 from soc_ml.core.plugins import usecase_model_factories
@@ -21,7 +21,7 @@ from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.training.trainer import train_bundle
 from soc_ml.usecases import WebRecon
 
-T0 = datetime(2026, 7, 21, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 21, 8, 0, 0, tzinfo=UTC)
 
 
 def _traffic() -> list[Event]:

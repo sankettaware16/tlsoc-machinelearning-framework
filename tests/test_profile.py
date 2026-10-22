@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from soc_ml.baseline.profile import EnvironmentProfile, _extension
 from soc_ml.core.contracts import Event, Observer
 
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 
 
 def ev(path: str = "/", ua: str = "Mozilla/5.0", status: int = 200,

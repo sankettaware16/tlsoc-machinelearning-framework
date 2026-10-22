@@ -19,14 +19,14 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from soc_ml.cli.main import _check_timestamp_quality
 
-T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 0, 0, tzinfo=UTC)
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SAMPLES = Path(__file__).resolve().parents[2] / "log_samples"
 

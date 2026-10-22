@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from soc_ml.baseline.profile import EnvironmentProfile
 from soc_ml.core.contracts import EntityKey, FeatureVector
 from soc_ml.features.window_features import WEB_RECON_FEATURES
 from soc_ml.usecases.web_recon import WebRecon
 
-T0 = datetime(2026, 7, 9, 8, 5, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 9, 8, 5, 0, tzinfo=UTC)
 ENTITY = EntityKey(server="web01", ip="10.0.0.1", ua_hash="deadbeefdeadbeef")
 
 

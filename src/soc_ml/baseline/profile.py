@@ -193,7 +193,7 @@ class EnvironmentProfile:
         path.write_text(json.dumps(doc), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: Path) -> "EnvironmentProfile":
+    def load(cls, path: Path) -> EnvironmentProfile:
         doc = json.loads(path.read_text(encoding="utf-8"))
         profile = cls()
         profile.meta = doc.get("meta", {})

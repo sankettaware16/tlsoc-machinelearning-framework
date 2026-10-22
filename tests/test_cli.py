@@ -9,14 +9,14 @@ runs must at least not crash on real output.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from soc_ml.cli.main import main
 
-T0 = datetime(2026, 7, 27, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 27, 8, 0, 0, tzinfo=UTC)
 
 
 def _synthetic_web_log(path: Path) -> None:
