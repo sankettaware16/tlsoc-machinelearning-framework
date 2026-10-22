@@ -10,6 +10,70 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-22 — The 7-day measurement, and the first fusion stage it called for
+
+### D-033 · Progressive alerting: lone weak signals stay low, sustained scanners reach the queue
+
+**The measurement (2026-10-13 → 10-20).** Stability and detection passed: 8
+days unattended, 0 restarts, 0 parse failures, 110M events; real scanners and
+the headless botnet caught. The alert budget passed **only through the cap**:
+exactly 3 delivered per day per detector, over web_recon fires of 4,408/day on
+~3,000 distinct addresses/day. Traffic had risen ~6× (82% of events now one
+vhost), and a percentile gate fires on a fixed share of windows — so volume
+followed traffic, exactly as [percentile-gating-sets-the-floor] predicted.
+Tuning cannot fix that; the spec's fusion stage is the designed answer.
+
+**What the week's fires looked like.** 91% of addresses fired once and never
+again (median 15 requests, 7% 404s). Persistence separated cleanly:
+
+| address keeps firing | episodes/day | addresses (week) |
+|---|---|---|
+| 1 window | ~3,500 | ~20,500 |
+| ≥ 10 min | 181 | 574 |
+| ≥ 15 min | 51 | 106 |
+| ≥ 30 min | 9 | 14 (404 share 0.96) |
+
+Corroboration by a second detector occurred once all week — the spec step,
+but not the lever on this feed yet.
+
+**Decision.** `fusion/progressive.py` implements the spec's UC-02 progressive
+alerting at the delivery layer, per (server, address), in event time: an
+episode is a run of firing windows with gaps ≤ 10 min; severity is capped by
+stage — one window **low**, persisting over 10 min **medium**, sustained 30 min
+**high** (critical is left to the additive bands; one detector alone never
+claims it); only **high** reaches the queue, once per address per day, later
+fires folding into it. Everything below is digested as a candidate with its
+stage and reason. Same-window user-agent fragments fold (D-031). State rides
+the checkpoint (D-029). `UseCase.progressive` opts in; web_recon does,
+bot_detection does not (its gate already demands 30 min). Backtest uses the
+same decision (FR-72). The dashboard separates candidates from budget overflow.
+
+**Measured.** The implemented class replayed over the week's 30,856 real fires:
+**3.9 queued alerts/day (1-6 every day)**, 27 in total, without the cap.
+Severity now carries information: 89% of fires low, 9% medium, 1% high
+(before: all critical).
+
+**The price, measured rather than assumed.** A scanner that finishes in one
+burst never reaches the queue. The 9 captured real scanners
+(`data/incidents/web_recon/`) each fired 360-880 requests within 6-100 s and
+become low candidates. Every sensitive probe they made returned 404; their 504
+successes were public pages and Drupal assets — they found nothing, and "low"
+is the right verdict. A burst that *does* succeed on a path the server never
+serves is the spec's context band ("transition-to-success") and is the next
+fusion refinement; it would not have fired for these. Second cost: a
+sustained scanner is queued 30 minutes after it began (its first window is in
+the digest at once).
+
+**Rules out.** Raising the gate percentile per traffic volume (a data
+threshold in disguise); dropping lone fires (they stay recorded and visible);
+claiming the budget is met by the cap.
+
+**Lives in.** `fusion/progressive.py`, `detection/runtime.py` (`_deliver`,
+`alerts_candidates`), `evaluation/backtest.py`, `core/plugins.py`
+(`UseCase.progressive`), `web/` (candidates), `tests/test_progressive.py`.
+
+---
+
 ## 2026-10-12 — A retrain that passes every check and is blind to the live attack
 
 ### D-032 · Real incidents are regression gates; bot_detection is not safe to retrain yet

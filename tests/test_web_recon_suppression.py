@@ -221,7 +221,7 @@ def _write_events(path: Path, events: list[Event]) -> None:
             }) + "\n")
 
 
-def test_runtime_suppresses_googlebot_but_delivers_the_scanner(tmp_path: Path) -> None:
+def test_runtime_suppresses_googlebot_but_still_alerts_on_the_scanner(tmp_path: Path) -> None:
     """Phase 3 exit criterion, offline: the crawler FP stops, detection doesn't."""
     events = _benign(2000)
     # Googlebot's normal presence during the training window: polite crawl,
@@ -262,16 +262,15 @@ def test_runtime_suppresses_googlebot_but_delivers_the_scanner(tmp_path: Path) -
     rt = DetectionRuntime(cfg, log=lambda *_: None)
     assert rt.run() == 0
 
-    alerts_file = tmp_path / "alerts" / "web_recon.ndjson"
-    assert alerts_file.exists(), "the scanner must still be delivered"
-    delivered_ips = {
-        json.loads(line)["entity"]["ip"]
-        for line in alerts_file.read_text().splitlines()
-    }
-    assert "203.0.113.77" in delivered_ips, "real recon still alerts"
-    assert GOOGLEBOT_IP not in delivered_ips, (
-        "the verified crawler must not reach the queue"
-    )
+    # The scanner still alerts — one burst, so a low progressive candidate in
+    # the digest (D-033) — while the verified crawler is suppressed outright.
+    scores = [json.loads(line) for line in
+              (tmp_path / "state" / "web_recon_scores.ndjson").read_text().splitlines()]
+    scanner = [r for r in scores if "203.0.113.77" in r["entity"]]
+    assert scanner, "real recon still fires"
+    assert all(r["disposition"] != "suppressed" for r in scanner)
+    assert {r["disposition"] for r in scores if GOOGLEBOT_IP in r["entity"]} == {
+        "suppressed"}, "the verified crawler must not reach the queue or the digest"
 
     suppressed_file = tmp_path / "state" / "web_recon_suppressed.ndjson"
     assert suppressed_file.exists(), "suppression must leave a visible record"

@@ -244,9 +244,10 @@ function renderHeader(ov){
         ${u.drift.drifted_features.length} features
         — <span class="mono">${esc(u.drift.drifted_features.join(", "))}</span>.
         Retrain and approve a new version below.</div>`);
-    if(u.digested > u.delivered && u.delivered > 0)
+    const overBudget = u.digested - (u.candidates || 0);
+    if(overBudget > u.delivered && u.delivered > 0)
       warn.push(`<div class="warnbox"><b>${esc(u.slug)} is over its daily budget.</b>
-        ${nf(u.digested)} alerts went to the digest against ${nf(u.delivered)} delivered
+        ${nf(overBudget)} alerts went to the digest against ${nf(u.delivered)} delivered
         — read <b>fires</b>, not delivered, as this detector's true output.</div>`);
   }
   $("alerts").innerHTML = warn.join("");
@@ -308,9 +309,13 @@ function renderUseCases(ov){
     const d = u.drift || {};
     const dband = d.band ? `<span class="badge ${
       d.should_retrain ? "b-bad" : "b-ok"}">drift: ${esc(d.band)}</span>` : "";
-    const budget = u.digested > 0
-      ? `<div class="note">Delivery is capped: ${nf(u.digested)} over budget went to
-         the digest. Fires is the honest number.</div>` : "";
+    const over = u.digested - (u.candidates || 0);
+    const budget = (over > 0
+      ? `<div class="note">Delivery is capped: ${nf(over)} over budget went to
+         the digest. Fires is the honest number.</div>` : "")
+      + ((u.candidates || 0) > 0
+      ? `<div class="note">${nf(u.candidates)} lone or short-lived fires stayed below the
+         queue as low/medium candidates (progressive alerting) — in the digest, not lost.</div>` : "");
     return `<div class="card">
       <h3>${esc(u.slug)}
         <span class="badge ${u.live ? "b-ok" : "b-bad"}">${u.live ? "active" : "idle"}</span>
@@ -357,7 +362,8 @@ function openUseCase(slug){
           ${u.fire_rate_pct ?? "–"}% of windows)</td></tr>
       <tr><th>delivered</th><td>${nf(u.delivered)} (${u.delivered_per_day ?? "–"}/day)</td></tr>
       <tr><th>folded (dedup)</th><td>${nf(u.folded)}</td></tr>
-      <tr><th>digested (budget)</th><td>${nf(u.digested)}</td></tr>
+      <tr><th>digested</th><td>${nf(u.digested)} (${nf(u.candidates || 0)} progressive
+          candidates, ${nf(u.digested - (u.candidates || 0))} over budget)</td></tr>
       <tr><th>suppressed</th><td>${nf(u.suppressed)}</td></tr>
       <tr><th>drift</th><td>${esc(u.drift?.band || "–")} · max PSI
           ${u.drift?.max_psi ?? "–"}${u.drift?.should_retrain ? " · retrain recommended" : ""}</td></tr>

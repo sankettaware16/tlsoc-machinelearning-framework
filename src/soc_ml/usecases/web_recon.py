@@ -62,6 +62,8 @@ class WebRecon(UseCase):
     models = ("isolation_forest", "lof_novelty")
     default_mode = RunMode.SHADOW
     daily_alert_budget = 50
+    #: Spec UC-02: first candidate low, upgraded as evidence accumulates (D-033).
+    progressive = True
     #: bot_detection scores first each window so its crawler annotation
     #: exists by the time this gate's alert is considered for delivery.
     depends_on = ("bot_detection",)

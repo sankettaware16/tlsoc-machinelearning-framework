@@ -171,9 +171,13 @@ def test_narrative_is_silent_about_rotation_when_there_is_none() -> None:
 # ------------------------------ runtime --------------------------------- #
 
 
-def test_rotating_scanner_is_one_delivered_alert(tmp_path: Path) -> None:
+def test_rotating_scanner_is_one_delivered_alert(tmp_path: Path, monkeypatch) -> None:
     """elkcc 2026-10-08: 36 fires, 3 delivered + 33 digested, budget gone in
-    one window. Now: one alert, the rest folded into it with the reason."""
+    one window. Now: one alert, the rest folded into it with the reason.
+
+    The address-level dedup path, as non-progressive detectors use it;
+    web_recon's progressive path folds the same way (test_progressive)."""
+    monkeypatch.setattr(WebRecon, "progressive", False)
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     events = _normal_and_scan()[:1500] + _rotating_scanner(

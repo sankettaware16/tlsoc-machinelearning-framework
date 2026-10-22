@@ -196,11 +196,13 @@ def test_runtime_cold_start_trains_then_detects(tmp_path: Path) -> None:
     from soc_ml.registry.store import ModelRegistry
     assert ModelRegistry(tmp_path).current_version("web_recon") is not None
 
-    # the scanner was delivered as an alert
-    alerts_file = tmp_path / "alerts" / "web_recon.ndjson"
-    assert alerts_file.exists()
-    ips = {json.loads(l)["entity"]["ip"] for l in alerts_file.read_text().splitlines()}
-    assert "203.0.113.7" in ips, "the enumeration scanner must be caught"
+    # the scanner was caught: it fired, and — one two-minute burst — it is a
+    # visible low candidate in the digest rather than a queued alert (D-033)
+    scores = (tmp_path / "state" / "web_recon_scores.ndjson").read_text().splitlines()
+    fired = [json.loads(line) for line in scores if "203.0.113.7" in line]
+    assert fired, "the enumeration scanner must be caught"
+    digest = (tmp_path / "state" / "web_recon_digest.ndjson").read_text()
+    assert "203.0.113.7" in digest and "progressive candidate" in digest
 
     # health was written
     assert (tmp_path / "state" / "web_recon_health.json").exists()
@@ -235,10 +237,16 @@ def test_runtime_checkpoint_resumes_without_reprocessing(tmp_path: Path) -> None
     assert rt.stats["events"] == 0, "resumed run must not reprocess consumed events"
 
 
-def test_restart_keeps_the_daily_cap_and_open_cooldowns(tmp_path: Path) -> None:
+def test_restart_keeps_the_daily_cap_and_open_cooldowns(tmp_path: Path, monkeypatch) -> None:
     """elkcc 2026-10-08: a restart granted a fresh 3/day allowance and
     re-delivered entities whose alert was still open. Delivery state must
-    ride the checkpoint like the read offset does."""
+    ride the checkpoint like the read offset does.
+
+    Exercised through web_recon with progressive alerting switched off: the
+    budget and cooldown path is what non-progressive detectors (bot_detection)
+    deliver through; the progressive path has its own restart test."""
+    from soc_ml.usecases import WebRecon
+    monkeypatch.setattr(WebRecon, "progressive", False)
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     log = incoming / "logs.json"
@@ -333,7 +341,11 @@ def test_live_mode_records_every_fired_window_with_its_disposition(tmp_path: Pat
     assert all(r["fired"] for r in rows)
     assert {r["disposition"] for r in rows} <= {
         "delivered", "folded", "digested", "suppressed"}
-    assert any(r["disposition"] == "delivered" for r in rows)
+    scanner = [r for r in rows if "203.0.113.7" in r["entity"]]
+    assert scanner, "the scanner's fires are recorded"
+    assert all("stage" in r and "episode_windows" in r for r in scanner), (
+        "progressive decisions are as measurable as any other (FR-36)"
+    )
     # The shadow log is a different population and must not be conflated.
     assert not (tmp_path / "state" / "web_recon_shadow.ndjson").exists()
 

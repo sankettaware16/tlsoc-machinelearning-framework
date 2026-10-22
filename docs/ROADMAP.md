@@ -197,11 +197,17 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       fires and is recorded — suppression happens at the fusion/delivery layer
       (`UseCase.suppression`), a new *input*, not a new threshold
 
-### 3.6 — Validate on elkcc
-- [ ] Train + shadow both detectors on live nginx; measure `web_recon` fire-rate
-      before/after suppression (Googlebot/Bingbot should stop firing)
-- [ ] Confirm `bot_detection` flags a genuine UA-spoofer if present
-- [ ] Decision gate: is the combined fire rate now within budget → go `--mode live`?
+### 3.6 — Validate on elkcc *(measured 2026-10-13 → 10-20; D-024…D-033)*
+- [x] Both detectors live on elkcc's nginx; verified crawlers suppressed with
+      reasons on record (D-022/D-023)
+- [x] `bot_detection` flagged a genuine headless-browser botnet (D-029/D-032)
+- [x] 8 days unattended, 0 restarts, 0 parse failures, reboot-proven (D-030)
+- [ ] Decision gate: combined *organic* rate within budget. Measured: within
+      budget only through the cap (web_recon ~3,000 new addresses/day).
+      Progressive alerting (D-033) replays to 3.9 queued/day — **re-measure
+      on elkcc for 7 days with it deployed, then decide**
+- [ ] bot_detection retrain is blocked until its label/features can represent
+      a headless browser (D-032)
 
 **After this phase**, UC-01/06/07 follow the same pattern; then the full fusion
 layer (corroboration, campaign folding, fleet-simultaneity) and SAIF v1.

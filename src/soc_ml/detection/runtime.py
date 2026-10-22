@@ -57,6 +57,7 @@ from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
 from soc_ml.drift.psi import DriftReport, population_stability_index
+from soc_ml.fusion.progressive import Progression
 from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.ingest.file import FileSource
 from soc_ml.registry.store import ModelBundle, ModelRegistry
@@ -134,6 +135,7 @@ class _UseCaseRunner:
         self.scorer: Scorer | None = None
         self.builder: WindowFeatureBuilder | None = None
         self.dedup = AlertDeduplicator()
+        self.progression = Progression() if uc_cls.progressive else None
         self.budget = AlertBudget(
             daily_budget_override
             if daily_budget_override is not None
@@ -151,6 +153,10 @@ class _UseCaseRunner:
             "alerts_folded": 0,
             "alerts_folded_by_source": 0,
             "alerts_digested": 0,
+            # Digested because the progressive stage kept them below the queue
+            # — part of alerts_digested, counted apart so "over budget" is not
+            # claimed for them.
+            "alerts_candidates": 0,
             "alerts_suppressed": 0,
             "last_drift_band": "unknown",
         }
@@ -372,28 +378,52 @@ class DetectionRuntime:
             runner.stats["alerts_suppressed"] += 1
             self.stats["alerts_suppressed"] += 1
             return "suppressed", {}
-        # 1. Fold repeats of the same entity — or of the same address under
-        #    another user-agent — into one open alert (dedup, D-031).
-        decision = runner.dedup.decide(outcome.alert)
-        if not decision.deliver:
-            runner.stats["alerts_folded"] += 1
-            self.stats["alerts_folded"] += 1
-            if decision.folded_by == "source":
-                runner.stats["alerts_folded_by_source"] += 1
-            return "folded", {"folded_by": decision.folded_by,
-                              "folded_into": decision.folded_into}
+        detail: dict = {}
+        if runner.progression is not None:
+            # 1a. Progressive alerting (D-033): severity capped by how long the
+            #     address has persisted; only a sustained episode is queued,
+            #     once per address per day. Below that: a visible candidate.
+            step = runner.progression.decide(outcome.alert)
+            detail = {"stage": step.stage.value, "episode_windows": step.episode_windows}
+            if step.action == "fold":
+                runner.stats["alerts_folded"] += 1
+                self.stats["alerts_folded"] += 1
+                if step.folded_by == "source":
+                    runner.stats["alerts_folded_by_source"] += 1
+                return "folded", {**detail, "folded_by": step.folded_by,
+                                  "folded_into": step.folded_into}
+            if step.action == "candidate":
+                self._digest(runner, outcome.alert,
+                             reason=f"progressive candidate ({step.stage.value}, "
+                                    f"{step.episode_windows} window(s)) — below the queue")
+                runner.stats["alerts_digested"] += 1
+                runner.stats["alerts_candidates"] += 1
+                self.stats["alerts_digested"] += 1
+                return "digested", {**detail, "digest_reason": "candidate"}
+        else:
+            # 1b. Fold repeats of the same entity — or of the same address
+            #     under another user-agent — into one open alert (D-031).
+            decision = runner.dedup.decide(outcome.alert)
+            if not decision.deliver:
+                runner.stats["alerts_folded"] += 1
+                self.stats["alerts_folded"] += 1
+                if decision.folded_by == "source":
+                    runner.stats["alerts_folded_by_source"] += 1
+                return "folded", {"folded_by": decision.folded_by,
+                                  "folded_into": decision.folded_into}
         # 2. Cap daily delivery per server; overflow -> digest, never dropped.
         if runner.budget.decide(outcome.alert) == BudgetDecision.DIGEST:
             self._digest(runner, outcome.alert)
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
-            return "digested", {}
+            return "digested", {**detail, "digest_reason": "budget"}
         runner.sink.emit_alert(outcome.alert)
         runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1
-        return "delivered", {}
+        return "delivered", detail
 
-    def _digest(self, runner: _UseCaseRunner, alert) -> None:
+    def _digest(self, runner: _UseCaseRunner, alert,
+                reason: str = "over daily budget — folded into digest") -> None:
         if runner.digest_fh is None:
             path = self.state_dir / f"{runner.slug}_digest.ndjson"
             runner.digest_fh = path.open("a", encoding="utf-8")
@@ -403,7 +433,7 @@ class DetectionRuntime:
                 "usecase": alert.usecase,
                 "entity": str(alert.entity),
                 "severity": alert.severity.value,
-                "reason": "over daily budget — folded into digest",
+                "reason": reason,
                 "narrative": alert.narrative,
             }) + "\n"
         )
@@ -514,6 +544,8 @@ class DetectionRuntime:
                     state = delivery.get(runner.slug) or {}
                     runner.budget.restore_state(state.get("budget") or {})
                     runner.dedup.restore_state(state.get("dedup") or {})
+                    if runner.progression is not None:
+                        runner.progression.restore_state(state.get("progression") or {})
                 self.log("[runtime] resumed from checkpoint")
             except Exception as exc:
                 self.log(f"[runtime] WARN: checkpoint unreadable ({exc}); starting fresh")
@@ -530,6 +562,8 @@ class DetectionRuntime:
             runner.slug: {
                 "budget": runner.budget.export_state(),
                 "dedup": runner.dedup.export_state(),
+                **({"progression": runner.progression.export_state()}
+                   if runner.progression is not None else {}),
             }
             for runner in self.runners
         }
