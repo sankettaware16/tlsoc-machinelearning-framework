@@ -229,7 +229,9 @@ Done:
 Open, in order:
 - [x] bot_detection: rhythm (unsupervised) component for the spoofing alert;
       address-keyed activity memory, persisted; memory age in evidence (P1,
-      D-036) — candidate awaiting approval
+      D-036) — code live; first candidates catch the botnet via rhythm but
+      also flag webmail polling tabs: fix the warm-up mismatch, add a benign
+      regression set, re-check
 - [x] One `ruff check --fix` (68 → 23 findings); adversarial review of the
       day's changes — 17 confirmed defects fixed (D-037)
 - [ ] `check_candidate --seeds`: judge on the worst seed (P2)

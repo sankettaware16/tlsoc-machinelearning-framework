@@ -94,6 +94,31 @@ GMM's 15) — 28 of 68 addresses, as the serving model. The same retraining
 without the rhythm model catches none (D-032). The corrected candidate's
 numbers follow below once its check completes.
 
+**The corrected candidate** (`v20261022T165316`, after the D-037 fixes),
+checked on 2.05 h of live traffic (1.9M events, 535k windows) with the
+runtime's history-only memory: canary 4/10 like serving; the captured botnet
+28/68 addresses like serving, **all 981 fired windows carried by
+`rhythm_iforest`** (GBM 8, GMM 21 over the gate); live fire rate 0.212%
+against serving's 0.125% → WARN. By address: 36 fired by both (the Alibaba
+botnet), 2 by serving only, **73 by the candidate only** — and those are
+mixed. Inspected: an `xmlrpc.php` brute-forcer posing as a browser (350
+xmlrpc hits, 1,131 × 404) and a PDF scraper — real bots the serving model
+misses — but also **Roundcube webmail tabs** polling
+`/?_task=mail&_action=refresh` every minute from campus and ISP addresses:
+people with their mail open. Not approvable; recorded DO_NOT_APPROVE with
+these reasons (the console blocks it).
+
+**Why, probably, and what next.** `addr_active_ratio` counts the last hour's
+buckets; a training replay starts with cold recent history (history-only
+restore drops it, rightly), so for its first hour no address is "active
+every five minutes" and the rhythm model learns that always-on is rare —
+while live, every open webmail tab is. Next: a warm-up-free active ratio
+(active buckets over buckets observed, within the hour) or excluding the
+replay's first hour from the rhythm model's fit; then a *benign* regression
+set (webmail pollers must not fire) beside the attack incidents, and a fresh
+check. The design point stands: the label-free component catches what the
+label cannot.
+
 **Lives in.** `features/bot_features.py` (`AddressMemory`),
 `features/window_features.py`, `models/rhythm.py`, `usecases/bot_detection.py`,
 `core/plugins.py` (`training_rows`), `training/trainer.py`,
