@@ -32,6 +32,7 @@ from typing import Any
 from soc_ml.baseline.profile import EnvironmentProfile, _extension, file_type
 from soc_ml.core.contracts import EntityKey, Event, FeatureVector
 from soc_ml.features.bot_features import (
+    AddressMemory,
     BotWindowState,
     EntityMemory,
     claimed_crawler_family,
@@ -68,6 +69,7 @@ _MAX_TRACKED_ENTITIES = 200_000  # cross-window entity-memory cap
 _SWEEP_EVERY = 1000  # events between watermark sweeps
 _MAX_SOURCE_UAS = 256  # per-(server, ip, bucket) cap on distinct user-agents
 _MAX_FINDINGS = 10  # successes on never-served file types kept per address-bucket
+_MAX_ADDRESSES = 50_000  # address-memory LRU (persisted by the runtime, D-036)
 
 
 @dataclass(slots=True)
@@ -158,6 +160,8 @@ class WindowFeatureBuilder:
         # windows are open; released when the last of them closes.
         self._sources: dict[tuple[str, str, int], _SourceAgg] = {}
         self._served_types: dict[str, frozenset[str]] = {}
+        # (server, ip) -> AddressMemory: rhythm across windows and user-agents.
+        self._addresses: dict[tuple[str, str], AddressMemory] = {}
         self._watermark: datetime | None = None
         self._since_sweep = 0
         self.stats = {
@@ -196,6 +200,7 @@ class WindowFeatureBuilder:
             self._open[key] = window
             self._source_for(event.entity, bucket).open_windows += 1
         self._fold(window, event, ts)
+        self._address_for(event.entity.server, event.entity.ip).remember(ts)
         source = self._source_for(event.entity, bucket)
         source.count += 1
         if len(source.ua_hashes) < _MAX_SOURCE_UAS:
@@ -270,6 +275,30 @@ class WindowFeatureBuilder:
         paths = source.unserved_ok_sizes.setdefault(event.body_bytes, set())
         if len(paths) < 2:
             paths.add(event.url_path)
+
+    def _address_for(self, server: str, ip: str) -> AddressMemory:
+        key = (server, ip)
+        memory = self._addresses.pop(key, None)
+        if memory is None:
+            if len(self._addresses) >= _MAX_ADDRESSES:
+                del self._addresses[next(iter(self._addresses))]
+                self.stats["address_memory_capped"] = (
+                    self.stats.get("address_memory_capped", 0) + 1)
+            memory = AddressMemory()
+        self._addresses[key] = memory
+        return memory
+
+    def export_address_memory(self) -> dict:
+        """The address memory, oldest first (the runtime persists it, D-036)."""
+        return {"addresses": [[s, ip, m.to_row()] for (s, ip), m in self._addresses.items()]}
+
+    def restore_address_memory(self, doc: dict) -> None:
+        for server, ip, row in (doc.get("addresses") or [])[-_MAX_ADDRESSES:]:
+            self._addresses[(str(server), str(ip))] = AddressMemory.from_row(row)
+
+    @property
+    def address_count(self) -> int:
+        return len(self._addresses)
 
     def _source_for(self, entity: EntityKey, bucket: int) -> _SourceAgg:
         key = (entity.server, entity.ip, bucket)
@@ -383,6 +412,17 @@ class WindowFeatureBuilder:
                 memory=self._memory_for(w.entity),
             )
         )
+        bucket = int(w.start.timestamp()) // self.window_s
+        source_key = (server, w.entity.ip, bucket)
+        source = self._sources.get(source_key) or _SourceAgg()
+        address = self._address_for(server, w.entity.ip)
+        address.close_bucket(bucket, source.count)
+        window_end = w.start + timedelta(seconds=self.window_s)
+        values.update({
+            "bot.addr_hour_entropy": address.hour_entropy(),
+            "bot.addr_active_ratio": address.active_ratio(bucket),
+            "bot.addr_rate_cv": address.rate_cv(),
+        })
         vector = FeatureVector(
             entity=w.entity,
             window="5m",
@@ -390,9 +430,6 @@ class WindowFeatureBuilder:
             values=values,
         )
         family = claimed_crawler_family(w.ua)
-        bucket = int(w.start.timestamp()) // self.window_s
-        source_key = (server, w.entity.ip, bucket)
-        source = self._sources.get(source_key) or _SourceAgg()
         source.open_windows -= 1
         if source.open_windows <= 0:
             self._sources.pop(source_key, None)
@@ -411,6 +448,10 @@ class WindowFeatureBuilder:
             "source_event_count": source.count,
             "source_ua_count": len(source.ua_hashes),
             "source_distinct_paths": len(source.paths),
+            # How much history stands behind the address features: a cold
+            # memory must read "unknown", not "human-like" (D-036).
+            "addr_memory_hours": round(address.hours_observed(window_end), 2),
+            "addr_days_observed": len(address.days),
             # Drop the catch-all page: a size shared by two never-served
             # paths is the site's answer to everything, not a file (D-034).
             "source_findings": [

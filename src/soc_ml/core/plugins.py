@@ -320,6 +320,18 @@ class UseCase(Plugin):
         """
         return None
 
+    def training_rows(
+        self, model_slug: str, rows: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        """The sub-population a model is *fitted* on. Default: every row.
+
+        bot_detection fits its rhythm model on browser-declared windows only:
+        the question is "unusual among browsers", and crawlers — which are
+        around the clock and metronomic by design — would teach that the
+        spoofer's rhythm is normal. Falls back to all rows when too small.
+        """
+        return rows
+
     def calibration_rows(
         self, model_slug: str, rows: list[dict[str, float]]
     ) -> list[dict[str, float]]:

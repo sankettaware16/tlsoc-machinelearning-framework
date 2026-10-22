@@ -55,8 +55,14 @@ def train_bundle(
     now: datetime | None = None,
     log: Callable[[str], None] = _noop,
     progress_every: int = 100_000,
+    address_memory: dict | None = None,
 ) -> ModelBundle:
     """Fit a full bundle for ``usecase_cls`` over the events the factory yields.
+
+    ``address_memory`` (the runtime's persisted snapshot, D-036) warms the
+    builder before pass 2: the log on disk covers hours, the rhythm features
+    describe days, and a corpus whose every address "just appeared" would
+    teach the rhythm model that around-the-clock activity never happens.
 
     ``log`` receives human progress lines. Training makes two full passes over
     the input (pass 1 learns the profile, pass 2 needs that profile to build
@@ -83,6 +89,9 @@ def train_bundle(
     # -- pass 2: window feature vectors ---------------------------------- #
     log("pass 2/2: building feature windows ...")
     builder = WindowFeatureBuilder(profile)
+    if address_memory:
+        builder.restore_address_memory(address_memory)
+        log(f"  address memory warmed: {builder.address_count:,} addresses")
     results = []
     seen = 0
     for event in events():
@@ -124,7 +133,11 @@ def train_bundle(
     for mslug, factory in model_factories.items():
         log(f"  fitting {mslug} ...")
         model = factory()
-        model.fit(cleaned)
+        fit_rows = usecase.training_rows(mslug, cleaned)
+        if len(fit_rows) < _MIN_TRAIN_WINDOWS:
+            log(f"    training subset too small ({len(fit_rows)}) — using all windows")
+            fit_rows = cleaned
+        model.fit(fit_rows)
         models[mslug] = model
         # Percentile reference: the use case may narrow the population this
         # model's scores are compared against (bot_detection: browser-declared

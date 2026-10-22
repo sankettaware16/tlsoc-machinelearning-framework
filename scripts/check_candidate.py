@@ -41,6 +41,7 @@ import argparse
 import builtins
 import functools
 import hashlib
+import json
 import os
 import sys
 from datetime import UTC, datetime, timedelta
@@ -79,10 +80,14 @@ def events(path: str, limit: int):
             break
 
 
-def score_through(uc_cls, bundle, stream, canary_events) -> dict:
+def score_through(uc_cls, bundle, stream, canary_events, memory=None) -> dict:
     """Replay one event stream through one bundle. Returns gate statistics."""
     scorer = Scorer(uc_cls, bundle, EntityAnnotations())
     builder = WindowFeatureBuilder(bundle.profile)
+    if memory:
+        # The live runtime's address memory (D-036): without it every address
+        # "just appeared" and the rhythm features read cold in the replay.
+        builder.restore_address_memory(memory)
 
     windows = fired = canary_windows = canary_fired = 0
     top: list[tuple[float, str, int]] = []
@@ -145,6 +150,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=200_000,
                     help="events to replay (0 = all; bound it on a busy box)")
     ap.add_argument("--out", default="data")
+    ap.add_argument("--memory-from", default=None, dest="memory_from",
+                    help="warm address memory from the runtime's snapshot for the "
+                         "live-traffic replay (incidents always replay cold)")
     ap.add_argument("--incident", action="append", default=[], metavar="FILE",
                     help="captured real attack (parser output) the candidate must "
                          "still catch; repeatable")
@@ -172,13 +180,16 @@ def main() -> int:
     span_h = (stream[-1].timestamp - stream[0].timestamp).total_seconds() / 3600.0
     print(f"read {len(stream):,} events spanning {span_h:.2f}h\n")
 
+    memory = None
+    if args.memory_from:
+        memory = json.loads(Path(args.memory_from).read_text(encoding="utf-8"))
     results = {}
     bundles = {}
     for label, version in (("serving", serving), ("candidate", candidate)):
         bundle = bundles[label] = reg.load(slug, version, factories)
         server = bundle.profile.dominant_server() or "_"
         canary = uc_cls.canary(server, stream[0].timestamp + timedelta(minutes=30))
-        results[label] = score_through(uc_cls, bundle, stream, canary)
+        results[label] = score_through(uc_cls, bundle, stream, canary, memory)
         results[label]["version"] = version
 
     gate = getattr(uc_cls, "GATE_PERCENTILE", None)
@@ -293,6 +304,7 @@ def main() -> int:
         "candidate": candidate,
         "input": {
             "path": str(args.input), "limit": args.limit, "events": len(stream),
+            "address_memory": (str(args.memory_from) if args.memory_from else None),
             "first": stream[0].timestamp.isoformat(),
             "last": stream[-1].timestamp.isoformat(),
             "sha256_events": digest.hexdigest(),

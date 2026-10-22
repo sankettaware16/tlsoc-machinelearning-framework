@@ -39,6 +39,8 @@ from soc_ml.baseline.profile import _extension
 from soc_ml.core.contracts import Event
 
 __all__ = [
+    "ADDRESS_RHYTHM_FEATURES",
+    "AddressMemory",
     "BOT_DETECTION_FEATURES",
     "BotWindowState",
     "EntityMemory",
@@ -59,6 +61,15 @@ BOT_DETECTION_FEATURES: tuple[str, ...] = (
     "bot.robots_txt_fetched",
     "bot.declared_bot",
     "timing.fano_factor",
+)
+
+#: Address-scoped rhythm (D-036). The entity is (server, ip, ua_hash), but the
+#: stable actor is the address: the headless botnet shared one user-agent
+#: across 30 addresses, the scanners one address across 34 user-agents.
+ADDRESS_RHYTHM_FEATURES: tuple[str, ...] = (
+    "bot.addr_hour_entropy",
+    "bot.addr_active_ratio",
+    "bot.addr_rate_cv",
 )
 
 #: Sub-resources a real browser fetches implicitly when rendering a page.
@@ -272,6 +283,83 @@ class EntityMemory:
             (c / total) * math.log2(c / total) for c in self.hour_counts.values()
         )
         return h / math.log2(24)
+
+
+_RECENT_BUCKETS = 12  # one hour of 5-minute buckets
+_MAX_DAYS = 8
+#: An address seen in fewer buckets than this has no measurable cadence; it
+#: reads neutral (Poisson-like), never "perfectly regular".
+_MIN_RATE_SAMPLES = 3
+_NEUTRAL_RATE_CV = 1.0
+
+
+@dataclass(slots=True)
+class AddressMemory:
+    """What one *address* did across windows, every user-agent included.
+
+    Persisted by the runtime (unlike ``EntityMemory``): a restart used to
+    leave every address reading "only just appeared", which shifted P(bot) —
+    and so the exported human-likeness — after every watchdog restart
+    (advisory review 2026-10-22). How much history stands behind a value is
+    carried as evidence, so a cold memory reads "unknown", not "human".
+    """
+
+    hour_counts: list = field(default_factory=lambda: [0] * 24)  # UTC hour -> events
+    days: list = field(default_factory=list)  # distinct UTC dates seen, newest last
+    first_seen: str | None = None  # ISO timestamp
+    recent: list = field(default_factory=list)  # [[bucket, events], ...], newest last
+
+    def remember(self, ts: datetime) -> None:
+        self.hour_counts[ts.hour] += 1
+        day = ts.date().isoformat()
+        if day not in self.days:
+            self.days.append(day)
+            del self.days[:-_MAX_DAYS]
+        if self.first_seen is None:
+            self.first_seen = ts.isoformat()
+
+    def close_bucket(self, bucket: int, events: int) -> None:
+        if self.recent and self.recent[-1][0] == bucket:
+            return  # another user-agent of this address, same bucket
+        self.recent.append([bucket, events])
+        del self.recent[:-_RECENT_BUCKETS]
+
+    def hour_entropy(self) -> float:
+        total = sum(self.hour_counts)
+        if total <= 1:
+            return 0.0
+        h = -sum((c / total) * math.log2(c / total) for c in self.hour_counts if c)
+        return h / math.log2(24)
+
+    def active_ratio(self, bucket: int) -> float:
+        """Share of the last hour's 5-minute buckets this address was active in."""
+        horizon = bucket - _RECENT_BUCKETS
+        return sum(1 for b, _ in self.recent if horizon < b <= bucket) / _RECENT_BUCKETS
+
+    def rate_cv(self) -> float:
+        counts = [n for _, n in self.recent]
+        if len(counts) < _MIN_RATE_SAMPLES:
+            return _NEUTRAL_RATE_CV
+        mean = sum(counts) / len(counts)
+        if mean <= 0:
+            return _NEUTRAL_RATE_CV
+        var = sum((c - mean) ** 2 for c in counts) / len(counts)
+        return math.sqrt(var) / mean
+
+    def hours_observed(self, now: datetime) -> float:
+        if self.first_seen is None:
+            return 0.0
+        return max(0.0, (now - datetime.fromisoformat(self.first_seen)).total_seconds() / 3600)
+
+    def to_row(self) -> list:
+        return [self.hour_counts, self.days, self.first_seen, self.recent]
+
+    @classmethod
+    def from_row(cls, row: list) -> AddressMemory:
+        hours, days, first, recent = row
+        return cls(hour_counts=list(hours)[:24] + [0] * (24 - len(hours)),
+                   days=list(days)[-_MAX_DAYS:], first_seen=first,
+                   recent=[list(r) for r in recent][-_RECENT_BUCKETS:])
 
 
 # --------------------------------------------------------------------------- #
