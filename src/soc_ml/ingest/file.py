@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -102,11 +102,17 @@ class FileSource(Source):
         poll_interval_s: float = 1.0,
         dlq_path: str | Path | None = None,
         start_at_end: bool = False,
+        on_idle: Callable[[], None] | None = None,
     ) -> None:
         self.root = Path(path).expanduser()
         self.pattern = pattern
         self.follow = follow
         self.poll_interval_s = poll_interval_s
+        #: Called between polls of a followed source. A consumer that does its
+        #: periodic work per event would otherwise go silent whenever the feed
+        #: does (elkcc 2026-10-23: logserver disk full, the runtime wrote no
+        #: health and the dashboard reported a live detector as stopped).
+        self.on_idle = on_idle
         self.dlq_path = Path(dlq_path).expanduser() if dlq_path else None
         self.start_at_end = start_at_end and follow
 
@@ -146,6 +152,8 @@ class FileSource(Source):
             if not self.follow:
                 return
             first_pass = False
+            if self.on_idle is not None:
+                self.on_idle()
             time.sleep(self.poll_interval_s)
 
     def _read_file(self, path: Path, *, first_pass: bool) -> Iterator[Event]:

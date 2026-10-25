@@ -254,6 +254,9 @@ class DetectionRuntime:
         self._stop = False
         self._source: FileSource | None = None
         self._started = time.monotonic()
+        #: Wall clock of the last event read; health reports it so the
+        #: dashboard can tell "no input" from "not running".
+        self._last_event_at: float | None = None
         self.stats = {
             "events": 0,
             "windows": 0,
@@ -281,6 +284,9 @@ class DetectionRuntime:
             self.cfg.input_dir, follow=self.cfg.follow,
             poll_interval_s=self.cfg.poll_interval_s,
             dlq_path=self.state_dir / f"{self.cfg.set_key}_dlq.ndjson",
+            # A quiet feed must still produce health and checkpoints; drift
+            # skips itself on an empty sample.
+            on_idle=lambda: self._tick(source),
         )
         self._restore_checkpoint(source)
         self._restore_address_memory()
@@ -296,6 +302,7 @@ class DetectionRuntime:
                 if self._stop:
                     break
                 self.stats["events"] += 1
+                self._last_event_at = time.time()
                 # Every runner sees every event; closed windows are handled
                 # immediately per runner, so an exporter's window for a bucket
                 # is scored before any consumer's window for that same bucket.
@@ -654,6 +661,8 @@ class DetectionRuntime:
                     runner.dedup.restore_state(state.get("dedup") or {})
                     if runner.progression is not None:
                         runner.progression.restore_state(state.get("progression") or {})
+                if isinstance(doc.get("last_event_at"), (int, float)):
+                    self._last_event_at = float(doc["last_event_at"])
                 self.log("[runtime] resumed from checkpoint")
             except Exception as exc:
                 self.log(f"[runtime] WARN: checkpoint unreadable ({exc}); starting fresh")
@@ -711,6 +720,9 @@ class DetectionRuntime:
             }
             for runner in self.runners
         }
+        # A restart onto a feed that already stopped reads nothing; without
+        # this its health could not say how long the input has been quiet.
+        doc["last_event_at"] = self._last_event_at
         tmp = self._ckpt_path().with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as fh:
             fh.write(json.dumps(doc))
@@ -739,9 +751,14 @@ class DetectionRuntime:
 
     def _write_health(self, source: FileSource) -> None:
         uptime = time.monotonic() - self._started
+        last_event_at = (
+            datetime.fromtimestamp(self._last_event_at, UTC).isoformat()
+            if self._last_event_at is not None else None
+        )
         for runner in self.runners:
             health = {
                 "timestamp": datetime.now(UTC).isoformat(),
+                "last_event_at": last_event_at,
                 "usecase": runner.slug,
                 "mode": runner.mode,
                 "bundle_version": runner.bundle.version if runner.bundle else None,

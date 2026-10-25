@@ -402,3 +402,42 @@ def test_stop_request_is_honoured_while_the_feed_is_idle(tmp_path: Path) -> None
     assert time.monotonic() - t0 < 5.0, "must not wait for a next event to stop"
     ckpt = json.loads((tmp_path / "state" / "web_recon_checkpoint.json").read_text())
     assert "delivery" in ckpt, "the drain wrote a fresh checkpoint"
+
+
+def test_health_keeps_being_written_while_the_feed_is_idle(tmp_path: Path) -> None:
+    """elkcc 2026-10-23: the logserver disk filled, no event arrived for half an
+    hour, the runtime wrote no health and the dashboard called a running
+    detector STOPPED. Health must keep coming, and say when input last came."""
+    import threading
+    import time
+
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    _write_events(incoming / "logs.json", _normal_and_scan())
+    DetectionRuntime(RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                                   follow=False, allow_cold_start=True),
+                     log=lambda *_: None).run()
+
+    rt = DetectionRuntime(
+        RuntimeConfig(input_dir=incoming, data_dir=tmp_path, mode="live",
+                      follow=True, poll_interval_s=0.1, health_every_s=0.2),
+        log=lambda *_: None,
+    )
+    health = tmp_path / "state" / "web_recon_health.json"
+    seen: dict = {}
+
+    def watch() -> None:
+        time.sleep(1.0)              # backlog consumed; nothing more will arrive
+        health.unlink(missing_ok=True)
+        time.sleep(1.0)              # only an idle-time write can recreate it
+        seen["doc"] = json.loads(health.read_text()) if health.exists() else None
+        rt.request_stop()
+
+    threading.Thread(target=watch, daemon=True).start()
+    assert rt.run() == 0
+
+    doc = seen["doc"]
+    assert doc is not None, "no health written while the feed was idle"
+    assert doc["last_event_at"] is not None
+    assert doc["last_event_at"] < doc["timestamp"], \
+        "health is newer than the last event: the input, not the runtime, went quiet"

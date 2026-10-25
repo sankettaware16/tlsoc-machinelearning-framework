@@ -22,7 +22,8 @@ from soc_ml.web.state import DashboardState
 # ------------------------------- fixtures ------------------------------- #
 
 
-def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True) -> Path:
+def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True,
+                input_age_s: float | None = 3.0) -> Path:
     """A data root shaped exactly like a live runtime's."""
     state = root / "state"
     alerts = root / "alerts"
@@ -32,8 +33,11 @@ def _deployment(root: Path, *, health_age_s: float = 3.0, candidate: bool = True
     # Health age must be relative to *this call*, not module import: on a
     # loaded machine the suite can take longer than the 60s liveness window.
     stamp = (datetime.now(UTC) - timedelta(seconds=health_age_s)).isoformat()
+    last_event = (None if input_age_s is None else
+                  (datetime.now(UTC) - timedelta(seconds=input_age_s)).isoformat())
     (state / "web_recon_health.json").write_text(json.dumps({
-        "timestamp": stamp, "usecase": "web_recon", "mode": "live",
+        "timestamp": stamp, "last_event_at": last_event,
+        "usecase": "web_recon", "mode": "live",
         "bundle_version": "v20260806T124821", "uptime_s": 90000.0, "eps": 12.3,
         "events": 1_100_000, "windows": 80_000, "open_windows": 40,
         "ingest_failed": 0, "entity_annotations": 20_000,
@@ -105,6 +109,22 @@ def test_a_stopped_runtime_is_not_reported_as_live(tmp_path: Path) -> None:
     """Health older than the write interval means the detector is gone."""
     st = DashboardState(_deployment(tmp_path, health_age_s=3600))
     assert st.overview()["runtime"]["live"] is False
+
+
+def test_a_running_runtime_with_no_input_is_live_but_idle(tmp_path: Path) -> None:
+    """Fresh health with an old last event: the feed stopped, not the detector."""
+    rt = DashboardState(_deployment(tmp_path, input_age_s=1800)).overview()["runtime"]
+    assert rt["live"] is True
+    assert rt["input_idle"] is True
+    assert rt["input_age_s"] >= 1800
+
+
+def test_input_idle_needs_evidence(tmp_path: Path) -> None:
+    """Flowing input is not idle; health from before the field existed is unknown."""
+    flowing = DashboardState(_deployment(tmp_path / "a")).overview()["runtime"]
+    assert flowing["input_idle"] is False
+    legacy = DashboardState(_deployment(tmp_path / "b", input_age_s=None)).overview()["runtime"]
+    assert legacy["input_idle"] is False and legacy["input_age_s"] is None
 
 
 def test_models_marks_approval_status(tmp_path: Path) -> None:
