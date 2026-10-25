@@ -26,6 +26,9 @@ __all__ = ["DashboardState"]
 
 #: Health is written every 10s; beyond this the runtime is treated as gone.
 _LIVE_WINDOW_S = 60.0
+#: A live runtime that has read nothing for this long is starved: the feed
+#: upstream (parser, Kafka, logserver) has stopped, not the detector.
+_INPUT_IDLE_S = 120.0
 #: Cache window for disk reads. Short enough to feel live, long enough that a
 #: 2-second poll from several tabs does not turn into a disk hammer.
 _TTL_S = 2.0
@@ -191,6 +194,7 @@ class DashboardState:
         slugs = self.deployed_slugs()
         usecases = []
         newest_age: float | None = None
+        input_age: float | None = None
         mode = None
         for slug in slugs:
             health = _read_json(self.state_dir / f"{slug}_health.json") or {}
@@ -198,6 +202,11 @@ class DashboardState:
             age = _age_s(health.get("timestamp"))
             if age is not None and (newest_age is None or age < newest_age):
                 newest_age = age
+            # Absent in health written before the runtime recorded it, and
+            # before the first event: unknown, never "idle".
+            ev_age = _age_s(health.get("last_event_at"))
+            if ev_age is not None and (input_age is None or ev_age < input_age):
+                input_age = ev_age
             mode = mode or health.get("mode")
             usecases.append({
                 "slug": slug,
@@ -250,6 +259,8 @@ class DashboardState:
             "data_root": str(self.data_root.resolve()),
             "runtime": {
                 "live": live,
+                "input_idle": live and input_age is not None and input_age >= _INPUT_IDLE_S,
+                "input_age_s": round(input_age, 1) if input_age is not None else None,
                 "mode": mode,
                 "last_seen_age_s": round(newest_age, 1) if newest_age is not None else None,
                 "eps": max((u.get("eps") or 0) for u in usecases) if usecases else 0,

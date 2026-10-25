@@ -28,6 +28,7 @@ h1 small{color:var(--dim);font-weight:400;margin-left:8px}
       font-size:12px;font-weight:600;border:1px solid transparent}
 .pill.live{background:rgba(63,185,80,.15);color:var(--ok);border-color:rgba(63,185,80,.4)}
 .pill.dead{background:rgba(248,81,73,.15);color:var(--bad);border-color:rgba(248,81,73,.4)}
+.pill.idle{background:rgba(210,153,34,.15);color:var(--warn);border-color:rgba(210,153,34,.4)}
 .pill.mode{background:rgba(68,147,248,.15);color:var(--accent);border-color:rgba(68,147,248,.4)}
 .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 .dot.beat{animation:beat 1.6s ease-in-out infinite}
@@ -211,11 +212,12 @@ function renderHeader(ov){
   const rt = ov.runtime;
   $("root").textContent = " " + ov.data_root;
   const pill = $("livePill");
-  pill.className = "pill " + (rt.live ? "live" : "dead");
+  pill.className = "pill " + (!rt.live ? "dead" : rt.input_idle ? "idle" : "live");
   pill.innerHTML = `<i class="dot ${rt.live?"beat":""}"></i><span>${
-    rt.live ? "LIVE" : "STOPPED"}</span>`;
+    !rt.live ? "STOPPED" : rt.input_idle ? "LIVE · NO INPUT" : "LIVE"}</span>`;
   pill.title = rt.last_seen_age_s === null ? "no health file yet"
-    : `health written ${rt.last_seen_age_s}s ago`;
+    : `health written ${rt.last_seen_age_s}s ago` + (rt.input_age_s === null ? ""
+      : `; last event read ${dur(rt.input_age_s)} ago`);
 
   const mp = $("modePill");
   if(rt.mode){ mp.hidden = false; mp.textContent = "mode: " + rt.mode; }
@@ -233,6 +235,10 @@ function renderHeader(ov){
   if(!rt.live) warn.push(`<div class="badbox"><b>Runtime is not writing health.</b>
     Nothing has been scored for ${rt.last_seen_age_s === null ? "an unknown period"
     : dur(rt.last_seen_age_s)}. The detector is stopped or wedged.</div>`);
+  else if(rt.input_idle) warn.push(`<div class="warnbox"><b>No input for
+    ${dur(rt.input_age_s)}.</b> The detector is running but has read no events:
+    the feed upstream has stopped. Check the parser output files, Kafka and the
+    logserver (disk space first).</div>`);
   if(rt.dlq) warn.push(`<div class="warnbox"><b>${nf(rt.dlq)} unparseable events</b>
     in the dead-letter queue — the input contract may not match.</div>`);
   if(rt.ingest_failed) warn.push(`<div class="warnbox"><b>${nf(rt.ingest_failed)}

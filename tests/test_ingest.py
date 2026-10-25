@@ -178,6 +178,17 @@ def test_malformed_lines_are_dead_lettered_not_dropped(tmp_path: Path) -> None:
     assert all("reason" in r and "raw" in r for r in records)
 
 
+def test_a_followed_source_calls_on_idle_between_polls(tmp_path: Path) -> None:
+    """A consumer whose periodic work runs per event goes silent with the feed;
+    on_idle is its chance to run that work while nothing arrives."""
+    write(tmp_path, "a.json", [ecs(path="/only")])
+    calls = []
+    src = FileSource(tmp_path, follow=True, poll_interval_s=0.01,
+                     on_idle=lambda: (calls.append(1), len(calls) >= 3 and src.stop()))
+    assert [e.url_path for e in src.read()] == ["/only"]
+    assert len(calls) == 3, "called once per empty poll, until stopped"
+
+
 def test_blank_lines_are_ignored_silently(tmp_path: Path) -> None:
     write(tmp_path, "a.json", [ecs(), "", "   ", ecs()])
     src = FileSource(tmp_path)
