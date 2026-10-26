@@ -76,6 +76,28 @@ cap. All were fixed, with tests that fail on the earlier code, and deployed
 before the window opened. The hypotheses above are the revised ones; their
 intent is unchanged.
 
+## Events during the window
+
+*Recorded as they happened, before the window closed. The hypotheses above are
+unchanged; these are facts for whoever writes the verdict.*
+
+- **2026-10-23 15:22 → ~15:55 IST: input outage, not a runtime fault.** The
+  logserver's root disk filled (sso.log, 17 GB, had no rotation rule); every
+  feed stopped upstream of Kafka. The runtime stayed up and resumed on its own.
+  Fires for 23 Oct are therefore a lower bound; H1 is one-sided, so this can
+  only help it, and the day still has score rows.
+- **2026-10-26 00:14 IST: operator restart for a deploy (commit d874e29).**
+  The change touches health, checkpoint and dashboard only (idle-feed health,
+  `last_event_at`); web_recon's scoring, features and delivery are unchanged,
+  so the window is not void. The runtime was stopped by SIGTERM at 00:14:21
+  (runtime.log line 787, clean drain at 00:14:28) and started 21 s later by
+  running `deploy/soc-ml-watchdog.sh` by hand. That writes
+  `[watchdog] 2026-10-26T00:14:49+05:30 runtime not running; restarting`
+  (line 789) — the exact line H4 counts. It is an operator restart (allowed
+  above), not a crash the watchdog papered over. By the letter, H4's count
+  will include it; the verdict must report that count and this note together
+  rather than drop either.
+
 ## Verdict
 
 *(appended after 2026-10-30T00:00 IST)*
