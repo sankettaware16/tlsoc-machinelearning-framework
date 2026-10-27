@@ -263,3 +263,90 @@ def _run_with_budget(tmp_path: Path, attack: list[Event], budget: int):
                           log=lambda *_: None)
     assert rt.run() == 0
     return rt
+
+
+# ------------- campaign folding (M-001, 23/26 Oct: one botnet, 30 alerts) ------------- #
+
+
+def _campaign_window(p: Progression, minutes: float, ips: list[str], ua: str = "bot",
+                     finding: set[str] = frozenset()) -> dict[str, object]:
+    """One five-minute window in which every address fires, as the runtime
+    hands a bucket's closed windows over: one after another."""
+    out = {}
+    for ip in ips:
+        a = _fire(ip=ip, minutes=minutes, ua=ua)
+        out[ip] = p.decide(_with_finding(a) if ip in finding else a)
+    return out
+
+
+def _sustain(p: Progression, ips: list[str], ua: str = "bot", start: float = 0,
+             finding: set[str] = frozenset()) -> dict[str, object]:
+    """Six windows: every address reaches the queue stage on the last one."""
+    for k in range(5):
+        _campaign_window(p, start + 5 * k, ips, ua)
+    return _campaign_window(p, start + 25, ips, ua, finding)
+
+
+def test_one_user_agent_across_many_addresses_at_once_is_one_alert() -> None:
+    p = Progression()
+    ips = [f"47.82.11.{i}" for i in range(30)]
+    last = _sustain(p, ips)
+    delivered = [ip for ip, s in last.items() if s.action == "deliver"]
+    assert delivered == [ips[0]], "the first member carries the campaign"
+    folded = [s for s in last.values() if s.action == "fold"]
+    assert len(folded) == 29
+    assert {s.folded_by for s in folded} == {"campaign"}
+    assert {s.folded_into for s in folded} == {f"{ips[0]}-bot-25"}
+
+
+def test_a_shared_user_agent_without_co_arrival_is_not_a_campaign() -> None:
+    """A common browser string is not an actor: two addresses reaching the
+    queue an hour apart stay two alerts."""
+    p = Progression()
+    first = _sustain(p, ["10.0.0.1"], ua="chrome")
+    second = _sustain(p, ["10.0.0.2"], ua="chrome", start=60)
+    assert first["10.0.0.1"].action == "deliver"
+    assert second["10.0.0.2"].action == "deliver"
+
+
+def test_different_user_agents_at_once_are_different_campaigns() -> None:
+    p = Progression()
+    _sustain(p, ["10.0.0.1", "10.0.0.2"], ua="a")
+    last = _sustain(p, ["10.0.0.3"], ua="b")
+    assert last["10.0.0.3"].action == "deliver"
+
+
+def test_a_finding_never_folds_into_a_campaign_that_had_none() -> None:
+    p = Progression()
+    last = _sustain(p, ["10.0.0.1", "10.0.0.2"], finding={"10.0.0.2"})
+    assert last["10.0.0.1"].action == "deliver"
+    assert last["10.0.0.2"].action == "deliver" and last["10.0.0.2"].escalated
+
+
+def test_findings_of_one_user_agent_at_once_fold_into_a_finding() -> None:
+    """25 Oct: six addresses of one user-agent, each with a finding, in ten minutes."""
+    p = Progression()
+    steps = _campaign_window(p, 0, ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+                             finding={"10.0.0.1", "10.0.0.2", "10.0.0.3"})
+    assert steps["10.0.0.1"].action == "deliver" and steps["10.0.0.1"].escalated
+    for ip in ("10.0.0.2", "10.0.0.3"):
+        assert steps[ip].action == "fold" and steps[ip].folded_by == "campaign"
+        assert steps[ip].into_finding, "a finding folds only into an alert with one"
+
+
+def test_a_campaign_member_later_that_day_folds_into_the_campaign_alert() -> None:
+    p = Progression()
+    _sustain(p, ["10.0.0.1", "10.0.0.2"])
+    later = p.decide(_fire(ip="10.0.0.2", minutes=120, ua="bot"))
+    assert later.action == "fold" and later.folded_by == "episode"
+    assert later.folded_into == "10.0.0.1-bot-25"
+
+
+def test_a_campaign_survives_a_restart() -> None:
+    p = Progression()
+    _sustain(p, ["10.0.0.1"])
+    q = Progression()
+    q.restore_state(json.loads(json.dumps(p.export_state())))
+    last = _sustain(q, ["10.0.0.2"], start=5)      # reaches the queue five minutes later
+    assert last["10.0.0.2"].action == "fold"
+    assert last["10.0.0.2"].folded_by == "campaign"

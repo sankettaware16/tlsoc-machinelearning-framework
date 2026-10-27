@@ -10,6 +10,64 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-10-27 — One botnet, thirty alerts: campaign folding
+
+### D-039 · Fold one user-agent's co-arriving addresses into one alert
+
+**Context.** M-001's H1 (≤ 3 queued/day on ≥ 5 of 7 days) is already
+arithmetically lost on day 4: 23 Oct queued 32, 25 Oct 8, 26 Oct 35. The 23rd
+and 26th are each one actor — a single user-agent hash (`dc0402b6…`) across
+28-30 Alibaba addresses (47.82/16, 47.79/16, the D-032 headless botnet), every
+address reaching the queue stage in the *same* five-minute window. Per-address
+delivery turned one campaign into thirty alerts. M-001's pre-registered
+consequence for an H1 failure names this lever: campaign folding, not the
+gate percentile, not the budget.
+
+**Decision.** A fourth fold rule in `Progression`: an alert about to be queued
+folds into the alert of another address with the same (server, user-agent)
+that reached the queue within `EPISODE_GAP` (10 min, sliding with each
+member). A finding folds only into a campaign alert that carried a finding
+(the C1 rule); otherwise it is queued and starts its own campaign. Members
+are recorded as the address's queued alert, so their later fires that day
+fold by "episode" as before. State rides the checkpoint.
+
+**Measured** with `scripts/replay_progression.py`, which replays the score
+log's fires through `Progression` and first had to reproduce the recorded
+queue exactly on the serving code (it did, every day): queued per day for
+23-27 Oct goes 32/2/8/35/33 → **3/2/3/7/6**; 89 campaign folds. The residue
+on 26-27 Oct is distinct user-agents at distinct times — real volume, not a
+folding defect — so H1 would still fail on those days.
+
+**Rules out.** Keying a campaign on user-agent alone: a common browser string
+is not an actor, so co-arrival is required (a test pins two same-UA addresses
+an hour apart as two alerts; with both the co-arrival check and the eviction
+removed, it fails). Folding a finding into an alert without one.
+
+**Not deployed.** It changes web_recon's delivery, which voids M-001; it ships
+after the window closes (2026-10-30 00:00 IST) under a new pre-registration.
+
+**Lives in.** `src/soc_ml/fusion/progressive.py`, `scripts/replay_progression.py`,
+`tests/test_progressive.py`.
+
+### D-038 · A quiet feed is not a stopped detector
+
+**Context.** 2026-10-23 15:22 IST: the logserver's disk filled (`sso.log`,
+17 GB, had no rotation rule) and every feed stopped upstream of Kafka. The
+runtime was alive but did its periodic work per event, so it wrote no health;
+the console reported STOPPED, pointing at the wrong layer.
+
+**Decision.** `FileSource` takes an `on_idle` callback, called between polls;
+the runtime runs its tick from it (health, checkpoint, flush; drift skips an
+empty sample). Health and the checkpoint carry `last_event_at`; the console
+shows **LIVE · NO INPUT** when health is fresh but nothing was read for
+2 minutes. STOPPED now means only that health stopped. Deployed 2026-10-26
+(d874e29); an operator restart inside M-001's window, recorded there.
+
+**Lives in.** `ingest/file.py`, `detection/runtime.py`, `web/state.py`,
+`web/dashboard.html`.
+
+---
+
 ## 2026-10-22 (late) — Two redesigns, then an adversarial review of the day
 
 ### D-037 · Seventeen defects in a day's work, found by trying to refute it

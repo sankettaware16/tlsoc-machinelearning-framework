@@ -29,6 +29,19 @@ a success on a file type the site never serves, at a path it was never seen
 serving — is queued at once with no ceiling: the spec's "transition-to-
 success" context band (D-034).
 
+**Campaign folding** (UC-12's first, narrowest form): one actor spread across
+many addresses is one alert, not one per address. On elkcc (M-001, 23 and
+26 Oct) a single headless botnet — one user-agent, 28-30 Alibaba addresses —
+brought every address to the queue in the same five-minute window, 30 queued
+alerts for one campaign, twice. An address about to be queued folds into the
+alert of another address with the same user-agent that reached the queue
+within ``EPISODE_GAP`` (the window slides with each member). Requiring
+co-arrival, not just a shared user-agent, keeps unrelated actors that happen to
+send a common browser string apart. Findings follow the rule above: a member
+that *found* something folds only into a campaign alert that carried a finding
+too (25 Oct: six addresses of one user-agent, each with a finding, in ten
+minutes); otherwise it is queued on its own and starts a campaign of its own.
+
 These constants are the specification's time horizons and severity bands, not
 data thresholds (FR-62): nothing here is compared against a learned quantity.
 """
@@ -60,9 +73,10 @@ class ProgressionStep:
     episode_windows: int
     episode_started: datetime
     folded_into: str | None = None
-    #: "episode" (the address's queued alert — this episode's, or today's) or
+    #: "episode" (the address's queued alert — this episode's, or today's),
     #: "source" (another user-agent of an address already represented in this
-    #: window).
+    #: window), or "campaign" (another address of the same user-agent queued
+    #: within EPISODE_GAP).
     folded_by: str | None = None
     #: Queued at once because the scan *found* something (D-034).
     escalated: bool = False
@@ -94,6 +108,9 @@ class Progression:
         self._episodes: dict[tuple[str, str], _Episode] = {}
         # (server, ip) -> (local day, queued alert id, that alert carried a finding)
         self._queued: dict[tuple[str, str], tuple[str, str, bool]] = {}
+        # (server, ua_hash) -> [last member's time, campaign alert id, members,
+        #                       the campaign alert carried a finding]
+        self._campaigns: dict[tuple[str, str], list] = {}
         self.stats = {"delivered": 0, "folded": 0, "candidates": 0, "escalated": 0}
 
     def decide(self, alert: Alert) -> ProgressionStep:
@@ -155,8 +172,24 @@ class Progression:
         if episode.window_alert is not None and (episode.window_found or not found):
             return fold(episode.window_alert, "source", episode.window_found)
 
+        # 4. Another address of the same user-agent reached the queue moments
+        #    ago: same campaign. Recorded as the address's queued alert, so its
+        #    later fires today fold by "episode" as before.
+        ckey = (alert.entity.server, alert.entity.ua_hash)
+        campaign = self._campaigns.get(ckey)
+        if ((found or stage is QUEUE_STAGE) and campaign is not None
+                and now - campaign[0] <= EPISODE_GAP and (campaign[3] or not found)):
+            campaign[0] = max(campaign[0], now)
+            campaign[2] += 1
+            self._queued[key] = (day, campaign[1], campaign[3])
+            episode.queued_alert, episode.queued_found = campaign[1], campaign[3]
+            episode.window_alert, episode.window_found = campaign[1], campaign[3]
+            return fold(campaign[1], "campaign", campaign[3])
+
         episode.window_alert, episode.window_found = alert.id, found
         if found or stage is QUEUE_STAGE:
+            if campaign is None or now - campaign[0] > EPISODE_GAP or found:
+                self._campaigns[ckey] = [now, alert.id, 1, found]
             self._queued[key] = (day, alert.id, found)
             episode.queued_alert, episode.queued_found = alert.id, found
             self.stats["delivered"] += 1
@@ -180,6 +213,9 @@ class Progression:
         old = [k for k, q in self._queued.items() if q[0] < day]
         for k in old:
             del self._queued[k]
+        ended = [k for k, c in self._campaigns.items() if now - c[0] > EPISODE_GAP]
+        for k in ended:
+            del self._campaigns[k]
 
     # -- durable state ----------------------------------------------------- #
     # Same reasoning as the budget and cooldowns (D-029): a restart must not
@@ -192,6 +228,9 @@ class Progression:
                          for (s, ip), e in self._episodes.items()],
             "queued": [[s, ip, d, aid, found]
                        for (s, ip), (d, aid, found) in self._queued.items()],
+            "campaigns": [[s, ua, last.isoformat(), aid, members, found]
+                          for (s, ua), (last, aid, members, found)
+                          in self._campaigns.items()],
         }
 
     def restore_state(self, doc: dict) -> None:
@@ -209,6 +248,10 @@ class Progression:
         self._queued = {(str(row[0]), str(row[1])): (str(row[2]), str(row[3]),
                                                      bool(opt(row, 4, False)))
                         for row in doc.get("queued") or []}
+        self._campaigns = {(str(row[0]), str(row[1])): [datetime.fromisoformat(row[2]),
+                                                        str(row[3]), int(row[4]),
+                                                        bool(opt(row, 5, False))]
+                           for row in doc.get("campaigns") or []}
 
 
 def _stage(windows: int) -> tuple[Severity, int]:

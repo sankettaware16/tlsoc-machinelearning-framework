@@ -234,6 +234,9 @@ Open, in order:
       regression set, re-check
 - [x] One `ruff check --fix` (68 → 23 findings); adversarial review of the
       day's changes — 17 confirmed defects fixed (D-037)
+- [ ] Campaign folding (D-039): built and replay-measured on branch
+      `campaign-folding` (23-27 Oct queued 32/2/8/35/33 → 3/2/3/7/6); merge
+      and deploy after M-001 closes (2026-10-30), then pre-register M-002
 - [ ] `check_candidate --seeds`: judge on the worst seed (P2)
 - [ ] Synthetic-attack harness through the real engine, detection always
       reported beside its false-alarm rate (P2)
