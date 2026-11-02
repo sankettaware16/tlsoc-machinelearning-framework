@@ -49,7 +49,7 @@ def test_once_per_address_per_day_uses_the_deployments_day() -> None:
         a = _at(utc)
         a.entity = EntityKey(server="web01", ip="9.9.9.9", ua_hash="h")
         a.id = utc
-        a.links["findings"] = [{"path": "/.env", "status": 200, "bytes": 9}]
+        a.links["exposures"] = [{"key": "web01|/.env", "kind": "secrets"}]
         return a
     p = Progression(tz=IST)
     assert p.decide(fire("2026-10-20T23:00:00")).action == "deliver"

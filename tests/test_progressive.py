@@ -201,7 +201,7 @@ def test_a_lone_burst_stays_a_visible_candidate(tmp_path: Path) -> None:
 
 
 def _with_finding(a):
-    a.links["findings"] = [{"path": "/.git/config", "status": 200, "bytes": 311}]
+    a.links["exposures"] = [{"key": "web01|/.git/", "kind": "vcs"}]
     return a
 
 
@@ -244,8 +244,8 @@ def test_a_finding_bypasses_the_daily_cap(tmp_path: Path) -> None:
     rt = _run_with_budget(tmp_path, _burst(found=True), budget=0)
     rows = [r for r in _rows(tmp_path / "state" / "web_recon_scores.ndjson")
             if "203.0.113.60" in r["entity"]]
-    assert rows[0]["disposition"] == "delivered" and rows[0]["budget"] == "bypassed: finding"
-    assert rows[0]["findings"] == 1
+    assert rows[0]["disposition"] == "delivered" and rows[0]["budget"] == "bypassed: exposure"
+    assert rows[0]["exposures"] == ["_|/backup.sql"]
     _ = (DetectionRuntime, RuntimeConfig, rt)
 
 

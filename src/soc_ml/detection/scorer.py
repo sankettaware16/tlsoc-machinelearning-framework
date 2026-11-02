@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any
 
 from soc_ml.core.contracts import Alert, EntityKey, Severity
 from soc_ml.core.plugins import UseCase
 from soc_ml.detection.annotations import EntityAnnotations
-from soc_ml.explain.context import narrative, top_features
+from soc_ml.explain.context import exposure_narrative, narrative, top_features
+from soc_ml.features.exposure import KINDS
 from soc_ml.features.window_features import WindowResult
 from soc_ml.fusion.severity import severity_score
 from soc_ml.registry.store import ModelBundle
@@ -75,6 +77,8 @@ class ScoreResult:
             # Recorded whatever delivery then decides, so "every finding was
             # queued" is a question the score log can answer (M-001 H2).
             row["findings"] = len(self.alert.links["findings"])
+        if self.evidence.get("exposures"):
+            row["exposures"] = [e["key"] for e in self.evidence["exposures"]]
         if self.alert is not None and "suppression_overridden" in self.alert.links:
             row["suppression_overridden"] = self.alert.links["suppression_overridden"]
         return row
@@ -195,8 +199,8 @@ class Scorer:
             return
         kind, reason = decision
         alert = out.alert
-        if kind == "suppress" and alert.links.get("findings"):
-            # A finding means the file is public, whoever fetched it: a
+        if kind == "suppress" and alert.links.get("exposures"):
+            # An exposure means the file is public, whoever fetched it: a
             # verified crawler getting /.env back is an exposure, not a
             # false positive (review 2026-10-22). Recorded, never silent.
             alert.links["suppression_overridden"] = f"finding overrides: {reason}"
@@ -218,12 +222,13 @@ class Scorer:
         synthetic: bool,
     ) -> Alert:
         findings = result.evidence.get("source_findings") or []
+        exposures = result.evidence.get("exposures") or []
         # Spec §7 context band, "transition-to-success": the scan got a
-        # never-served file type back (D-034).
-        score_0_100, band = severity_score(fused, context_band=10 if findings else 0)
+        # sensitive file back (D-034, narrowed to sensitive kinds in D-040).
+        score_0_100, band = severity_score(fused, context_band=10 if exposures else 0)
         top = top_features(x, self.bundle.profile, self.slug)
         entity = result.vector.entity
-        return Alert(
+        alert = Alert(
             id=str(uuid.uuid4()),
             timestamp=result.vector.computed_at,
             usecase=self.slug,
@@ -261,5 +266,86 @@ class Scorer:
                     if result.evidence.get("entity_annotations")
                     else {}
                 ),
+                "category": "scanner" if self.slug == "web_recon" else self.slug,
+                "context": _context(result.evidence),
             },
         )
+        if exposures:
+            self._make_exposure(alert, exposures, result.evidence, fired=True)
+        return alert
+
+    def exposure_alert(self, out: ScoreResult) -> Alert:
+        """An alert for a window that did not fire but downloaded a sensitive file.
+
+        The models judge whether traffic *looks* like a scan; a download of
+        ``/.git/config`` is an incident whether or not it does — one targeted
+        request never reaches the evidence floor (D-040). The models' view is
+        kept on the alert as context.
+        """
+        result_evidence = out.evidence
+        entity = out.entity
+        alert = Alert(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.fromisoformat(out.window_end),
+            usecase=self.slug,
+            entity=entity,
+            severity=Severity.LOW,
+            severity_score=0,
+            confidence=out.fused_percentile,
+            scores={"fused_pct": out.fused_percentile, **out.per_model},
+            evidence=result_evidence.get("raw_lines", [])[:10],
+            model_versions=dict.fromkeys(self.bundle.models, self.bundle.version),
+            links={
+                "rule_id": self.usecase_cls.usecase_id,
+                "rule_name": self.usecase_cls.title,
+                "synthetic": False,
+                "context": _context(result_evidence),
+            },
+        )
+        self._make_exposure(alert, result_evidence["exposures"], result_evidence, fired=False)
+        return alert
+
+    def _make_exposure(self, alert: Alert, exposures: list[dict], evidence: dict,
+                       *, fired: bool) -> None:
+        """Turn an alert into an exposure alert: kind-set severity, plain narrative."""
+        kinds = [KINDS[e["kind"]] for e in exposures if e["kind"] in KINDS]
+        worst = max(kinds, key=lambda k: _KIND_SCORE[k.severity]) if kinds else None
+        if worst is not None:
+            # Severity is what was exposed, not how odd the traffic looked.
+            alert.severity_score = max(_KIND_SCORE[worst.severity],
+                                       alert.severity_score if fired else 0)
+            alert.severity = Severity.from_score(alert.severity_score)
+        alert.links["category"] = "exposure"
+        alert.links["rule_name"] = f"{self.usecase_cls.title}: sensitive file exposure"
+        alert.links["exposures"] = [
+            {**e, "title": KINDS[e["kind"]].title, "impact": KINDS[e["kind"]].impact,
+             "actions": list(KINDS[e["kind"]].actions),
+             "alertable": KINDS[e["kind"]].alert}
+            for e in exposures if e["kind"] in KINDS]
+        alert.links["model_fired"] = fired
+        alert.narrative = exposure_narrative(
+            alert.entity.ip, alert.links["exposures"], evidence,
+            fired=fired, fused=alert.confidence)
+
+
+#: Severity score an exposure kind sets — the top of each band but critical.
+_KIND_SCORE = {Severity.CRITICAL: 95, Severity.HIGH: 85, Severity.MEDIUM: 60,
+               Severity.LOW: 30}
+
+
+def _context(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Who and where — the fields an analyst and a SIEM search on."""
+    return {
+        "window_start": evidence.get("window_start"),
+        "window_end": evidence.get("window_end"),
+        "user_agent": evidence.get("user_agent"),
+        "events": evidence.get("event_count"),
+        "distinct_paths": evidence.get("distinct_paths"),
+        "n404": evidence.get("n404"),
+        "status_counts": evidence.get("status_counts"),
+        "domains": evidence.get("domains"),
+        "geo": evidence.get("geo"),
+        "network": evidence.get("network"),
+        "source_events": evidence.get("source_event_count"),
+        "source_user_agents": evidence.get("source_ua_count"),
+    }

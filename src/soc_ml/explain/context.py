@@ -20,7 +20,7 @@ from typing import Any
 
 from soc_ml.baseline.profile import EnvironmentProfile
 
-__all__ = ["top_features", "narrative"]
+__all__ = ["top_features", "narrative", "exposure_narrative"]
 
 _EPS = 1e-9
 
@@ -112,8 +112,8 @@ def narrative(
             for f in findings[:3])
         more = f" and {len(findings) - 3} more" if len(findings) > 3 else ""
         parts.append(
-            f"It got a successful response for a file type this site never serves: "
-            f"{shown}{more}."
+            f"It also got answers for file types not seen served here during "
+            f"training (context, not by itself an exposure): {shown}{more}."
         )
     rotation = evidence.get("source_ua_count") or 0
     if rotation > 1:
@@ -128,4 +128,50 @@ def narrative(
             f"{phrase}: {entry['value']} vs server median {entry['population_p50']}"
             f" (p99 {entry['population_p99']})."
         )
+    return " ".join(parts)
+
+
+def exposure_narrative(
+    ip: str,
+    exposures: list[dict[str, Any]],
+    evidence: dict[str, Any],
+    *,
+    fired: bool,
+    fused: float,
+) -> str:
+    """What was taken, from where, by whom — then why it matters.
+
+    Written for the responder, not the model owner: the first sentence must be
+    enough to open a ticket with the site owner.
+    """
+    who = ip
+    net = evidence.get("network") or {}
+    geo = evidence.get("geo") or {}
+    origin = ", ".join(x for x in (net.get("organization"), geo.get("country_name")) if x)
+    if origin:
+        who += f" ({origin})"
+    parts = []
+    for e in exposures[:3]:
+        files = e.get("files") or []
+        status = files[0]["status"] if files else "2xx"
+        count = e.get("files_count", len(files))
+        noun = "file" if count == 1 else "files"
+        parts.append(
+            f"{who} downloaded {count:,} {noun} ({e.get('bytes_total', 0):,} bytes, "
+            f"HTTP {status}) of {e['title'].lower()} from "
+            f"https://{e['domain']}{e['root']} between {e['first_seen'][11:19]} and "
+            f"{e['last_seen'][11:19]} UTC.")
+    if len(exposures) > 3:
+        parts.append(f"{len(exposures) - 3} more exposures in the same window.")
+    parts.append(exposures[0]["impact"])
+    if fired:
+        parts.append(
+            f"Its traffic also looked like a scan: {evidence.get('event_count', '?')} "
+            f"requests to {evidence.get('distinct_paths', '?')} distinct paths, "
+            f"{evidence.get('n404', '?')} of them 404, in 5 minutes (model percentile "
+            f"{fused:.3f}).")
+    else:
+        parts.append(
+            f"Its traffic did not look like a scan to the models (percentile "
+            f"{fused:.3f}): a targeted request, which no rate or volume rule would catch.")
     return " ".join(parts)

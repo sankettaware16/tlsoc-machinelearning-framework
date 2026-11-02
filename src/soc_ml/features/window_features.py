@@ -31,6 +31,7 @@ from typing import Any
 
 from soc_ml.baseline.profile import EnvironmentProfile, _extension, file_type
 from soc_ml.core.contracts import EntityKey, Event, FeatureVector
+from soc_ml.features.exposure import ExposureTracker, classify
 from soc_ml.features.bot_features import (
     AddressMemory,
     BotWindowState,
@@ -71,6 +72,9 @@ _MAX_SOURCE_UAS = 256  # per-(server, ip, bucket) cap on distinct user-agents
 _MAX_FINDINGS = 10  # findings reported per address-bucket (after the catch-all filter)
 _MAX_FINDING_CANDIDATES = 256  # kept *before* the filter, so soft-404s cannot crowd out a file
 _MAX_ADDRESSES = 50_000  # address-memory LRU (persisted by the runtime, D-036)
+_MAX_SITES = 5_000  # sites whose response sizes are remembered (catch-all detection)
+_MAX_SITE_SIZES = 20_000  # distinct response sizes remembered per site
+_MAX_EXPOSURE_FILES = 20  # files listed per exposure (all are counted)
 
 
 @dataclass(slots=True)
@@ -94,6 +98,9 @@ class _OpenWindow:
     raw_lines: deque = field(default_factory=lambda: deque(maxlen=_MAX_EVIDENCE_LINES))
     ua: str | None = None
     bot: BotWindowState = field(default_factory=BotWindowState)
+    domains: Counter = field(default_factory=Counter)
+    geo: dict | None = None
+    network: dict | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +125,9 @@ class _SourceAgg:
     #: its own size; a catch-all page ("soft 404") repeats one size across
     #: paths — webmail answered 123 probes with the same 2,848 bytes.
     unserved_ok_sizes: dict = field(default_factory=dict)
+    #: exposure key -> what this address downloaded of one sensitive file or
+    #: repository (D-040). Judged at close, against the site's catch-all sizes.
+    exposures: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -161,6 +171,11 @@ class WindowFeatureBuilder:
         # windows are open; released when the last of them closes.
         self._sources: dict[tuple[str, str, int], _SourceAgg] = {}
         self._served_types: dict[str, frozenset[str]] = {}
+        # site -> {response size -> up to 3 paths answered 2xx with it}. A real
+        # file has its own size; a size the site returned for several paths is
+        # its catch-all page (an SPA shell, a soft 404). Learned live, from all
+        # clients, so the attacker's own probes count too (D-040).
+        self._site_sizes: dict[str, dict[int, set]] = {}
         # (server, ip) -> AddressMemory: rhythm across windows and user-agents.
         self._addresses: dict[tuple[str, str], AddressMemory] = {}
         # Addresses whose long-term history came from a snapshot taken *after*
@@ -220,6 +235,7 @@ class WindowFeatureBuilder:
         if self._is_finding(event):
             self._note_finding(source, event)
         self._note_unserved_success(source, event)
+        self._note_exposure(source, event)
 
         self._since_sweep += 1
         if self._since_sweep >= _SWEEP_EVERY:
@@ -303,6 +319,72 @@ class WindowFeatureBuilder:
         if len(paths) < 2:
             paths.add(event.url_path)
 
+    def _note_exposure(self, source: _SourceAgg, event: Event) -> None:
+        status = event.status_code or 0
+        size = event.body_bytes or 0
+        path = event.url_path
+        if not 200 <= status < 300 or size <= 0 or not path:
+            return
+        site = (event.url_domain or "_").lower()
+        sizes = self._site_sizes.pop(site, None)
+        if sizes is None:
+            if len(self._site_sizes) >= _MAX_SITES:
+                del self._site_sizes[next(iter(self._site_sizes))]
+            sizes = {}
+        self._site_sizes[site] = sizes  # most recently seen last
+        paths = sizes.get(size)
+        if paths is None:
+            if len(sizes) >= _MAX_SITE_SIZES:
+                del sizes[next(iter(sizes))]
+            paths = sizes[size] = set()
+        if len(paths) < 3:
+            paths.add(path)
+        hit = classify(path)
+        if hit is None:
+            return
+        kind, root = hit
+        key = ExposureTracker.key(site, root)
+        exp = source.exposures.get(key)
+        if exp is None:
+            exp = source.exposures[key] = {
+                "key": key, "kind": kind.slug, "root": root, "domain": site,
+                "first_seen": event.timestamp.isoformat(), "files": {}}
+        exp["last_seen"] = event.timestamp.isoformat()
+        known = exp["files"].get(path)
+        if known is None or size > known[1]:
+            exp["files"][path] = (status, size)
+
+    def _confirmed_exposures(self, source: _SourceAgg) -> list[dict]:
+        """The address's exposures whose files are not the site's catch-all page.
+
+        Taken once per address-bucket: the first of its windows to close
+        carries them, so a scanner rotating forty user-agents is one exposure
+        record, not forty.
+        """
+        out = []
+        for exp in source.exposures.values():
+            sizes = self._site_sizes.get(exp["domain"], {})
+            real = []
+            for path, (status, size) in exp["files"].items():
+                others = sizes.get(size, set()) - {path}
+                if len(others) >= 2:
+                    continue  # the site's answer to many paths
+                if len(source.unserved_ok_sizes.get(size, ())) >= 2:
+                    continue  # this address's own probes got that same page
+                real.append({"path": path, "status": status, "bytes": size})
+            if not real:
+                continue
+            real.sort(key=lambda f: -f["bytes"])
+            out.append({
+                "key": exp["key"], "kind": exp["kind"], "root": exp["root"],
+                "domain": exp["domain"], "first_seen": exp["first_seen"],
+                "last_seen": exp["last_seen"], "files_count": len(real),
+                "bytes_total": sum(f["bytes"] for f in real),
+                "files": real[:_MAX_EXPOSURE_FILES],
+            })
+        source.exposures.clear()
+        return out
+
     def _address_for(self, server: str, ip: str) -> AddressMemory:
         key = (server, ip)
         memory = self._addresses.pop(key, None)
@@ -363,6 +445,13 @@ class WindowFeatureBuilder:
         server = event.entity.server
         w.count += 1
         w.ua = event.user_agent
+        if event.url_domain and (event.url_domain in w.domains or len(w.domains) < 64):
+            w.domains[event.url_domain.lower()] += 1
+        if w.geo is None and event.geo_country_iso:
+            w.geo = {"country_iso_code": event.geo_country_iso,
+                     "country_name": event.geo_country_name, "city_name": event.geo_city}
+        if w.network is None and event.source_asn:
+            w.network = {"number": event.source_asn, "organization": event.source_as_org}
         self._memory_for(w.entity).remember(event)
         w.bot.fold(event, ts, w.start)
         if event.url_path == "/robots.txt":
@@ -510,6 +599,15 @@ class WindowFeatureBuilder:
             "family_robots_txt": bool(family)
             and (server, family) in self._family_robots,
             "raw_lines": list(w.raw_lines),
+            # Who and where, for the analyst and the SIEM (never model input).
+            "domains": w.domains.most_common(5),
+            "geo": w.geo,
+            "network": w.network,
+            "status_counts": {"2xx": w.n2xx, "3xx": w.n3xx, "4xx": w.n4xx, "5xx": w.n5xx},
+            # Sensitive files this address actually got, judged against the
+            # site's catch-all sizes (D-040). Present whether or not the
+            # models fire: a download of /.git is an incident by itself.
+            "exposures": self._confirmed_exposures(source),
         }
         return WindowResult(vector=vector, evidence=evidence)
 

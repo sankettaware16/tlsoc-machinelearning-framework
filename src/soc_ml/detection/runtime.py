@@ -64,6 +64,7 @@ from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
 from soc_ml.detection.scorer import Scorer
 from soc_ml.drift.psi import DriftReport, population_stability_index
+from soc_ml.features.exposure import ExposureTracker
 from soc_ml.features.window_features import WindowFeatureBuilder
 from soc_ml.fusion.progressive import Progression
 from soc_ml.ingest.file import FileSource
@@ -119,6 +120,7 @@ class RuntimeConfig:
         sink_name: str = "file",
         modes: dict[str, str] | None = None,
         timezone_name: str = "UTC",
+        exposure_allow: tuple[str, ...] = (),
     ) -> None:
         self.usecases = (usecases,) if isinstance(usecases, str) else tuple(usecases)
         self.input_dir = Path(input_dir)
@@ -140,6 +142,9 @@ class RuntimeConfig:
         #: "UTC", an IANA name ("Asia/Kolkata") or "local" (the host's zone):
         #: the day that daily budgets and once-per-day folds are counted in.
         self.timezone_name = timezone_name
+        #: Exposures the operator serves on purpose (config ``exposure.allow``):
+        #: ``site|root`` patterns with ``*`` wildcards. Policy, not a threshold.
+        self.exposure_allow = tuple(exposure_allow)
 
     def mode_for(self, slug: str) -> str:
         return self.modes.get(slug, self.mode)
@@ -179,6 +184,8 @@ class _UseCaseRunner:
         self.builder: WindowFeatureBuilder | None = None
         self.dedup = AlertDeduplicator()
         self.progression = Progression(tz=tz) if uc_cls.progressive else None
+        self.exposures = ExposureTracker()
+        self.exposures_fh = None
         self.budget = AlertBudget(
             daily_budget_override
             if daily_budget_override is not None
@@ -213,6 +220,9 @@ class _UseCaseRunner:
             # claimed for them.
             "alerts_candidates": 0,
             "alerts_suppressed": 0,
+            "exposure_alerts": 0,
+            "exposure_downloads": 0,
+            "exposure_downloads_folded": 0,
             "last_drift_band": "unknown",
         }
 
@@ -430,6 +440,7 @@ class DetectionRuntime:
             self._count_hour(runner, outcome)
 
             if runner.mode == "live":
+                exposures = self._unallowed_exposures(outcome)
                 if outcome.fired and outcome.alert is not None:
                     # The delivery decision is recorded even when it removes
                     # the alert. D-023: a delivery modification that cannot be
@@ -437,6 +448,12 @@ class DetectionRuntime:
                     # `downweighted_by` lives nowhere else once an alert is
                     # folded or digested.
                     disposition, detail = self._deliver(runner, outcome)
+                    self._score_record(runner, outcome, disposition, detail)
+                elif exposures:
+                    # A sensitive file was downloaded in a window the models
+                    # did not flag — a targeted request (D-040).
+                    alert = runner.scorer.exposure_alert(outcome)
+                    disposition, detail = self._deliver_exposure(runner, alert)
                     self._score_record(runner, outcome, disposition, detail)
             else:
                 # observe / shadow: record everything, deliver nothing.
@@ -452,6 +469,13 @@ class DetectionRuntime:
             runner.stats["alerts_suppressed"] += 1
             self.stats["alerts_suppressed"] += 1
             return "suppressed", {}
+        if outcome.alert.links.get("exposures"):
+            if runner.progression is not None:
+                # Advances the address's episode so its later scanner fires
+                # today fold into this alert; the exposure tracker, not the
+                # episode, decides whether this one is new.
+                runner.progression.decide(outcome.alert)
+            return self._deliver_exposure(runner, outcome.alert)
         detail: dict = {}
         if runner.progression is not None:
             # 1a. Progressive alerting (D-033): severity capped by how long the
@@ -502,6 +526,86 @@ class DetectionRuntime:
         runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1
         return "delivered", detail
+
+    def _unallowed_exposures(self, outcome) -> list[dict]:
+        """The window's exposures minus those the operator allows (config)."""
+        exposures = outcome.evidence.get("exposures") or []
+        if exposures and self.cfg.exposure_allow:
+            from fnmatch import fnmatchcase
+            kept = [e for e in exposures
+                    if not any(fnmatchcase(e["key"], pat) for pat in self.cfg.exposure_allow)]
+            if len(kept) != len(exposures):
+                outcome.evidence["exposures"] = kept
+                if outcome.alert is not None:
+                    outcome.alert.links["exposures_allowed"] = [
+                        e["key"] for e in exposures if e not in kept]
+                    if not kept:
+                        outcome.alert.links.pop("exposures", None)
+            exposures = kept
+        return exposures
+
+    def _deliver_exposure(self, runner: _UseCaseRunner, alert) -> tuple[str, dict]:
+        """One alert per exposure (site + root), every download recorded.
+
+        Not capped by the daily budget: an exposure is rare and is the alert
+        the budget exists to protect (D-034). A kind that is not alert-worthy
+        (development metadata) is recorded and digested.
+        """
+        exposures = alert.links.get("exposures") or []
+        new: list[str] = []
+        into: str | None = None
+        for exp in exposures:
+            if not exp.get("alertable", True):
+                exp["new"] = False
+                continue
+            action, alert_id = runner.exposures.decide(
+                exp["key"], alert.id, alert.timestamp, alert.entity.ip)
+            exp["new"] = action == "deliver"
+            if exp["new"]:
+                new.append(exp["key"])
+            else:
+                exp["alert_id"] = alert_id
+                into = into or alert_id
+        for exp in exposures:
+            self._exposure_record(runner, alert, exp, exp.get("alert_id") or alert.id)
+        runner.stats["exposure_downloads"] += len(exposures)
+        detail = {"exposures": [e["key"] for e in exposures], "budget": "bypassed: exposure"}
+        if new:
+            runner.sink.emit_alert(alert)
+            runner.stats["alerts_delivered"] += 1
+            runner.stats["exposure_alerts"] += 1
+            self.stats["alerts_delivered"] += 1
+            return "delivered", {**detail, "escalated_by": "exposure"}
+        if into is not None:
+            runner.stats["alerts_folded"] += 1
+            runner.stats["exposure_downloads_folded"] += 1
+            self.stats["alerts_folded"] += 1
+            return "folded", {**detail, "folded_by": "exposure", "folded_into": into,
+                              "into_finding": True}
+        self._digest(runner, alert, reason="exposure of a low-impact kind — recorded only")
+        runner.stats["alerts_digested"] += 1
+        self.stats["alerts_digested"] += 1
+        return "digested", {**detail, "digest_reason": "exposure_low"}
+
+    def _exposure_record(self, runner: _UseCaseRunner, alert, exp: dict,
+                         alert_id: str) -> None:
+        """Every download of every exposure — the 'who else took it' list."""
+        if runner.exposures_fh is None:
+            path = self.state_dir / f"{runner.slug}_exposures.ndjson"
+            runner.exposures_fh = path.open("a", encoding="utf-8")
+        ctx = alert.links.get("context") or {}
+        runner.exposures_fh.write(json.dumps({
+            "@timestamp": alert.timestamp.isoformat(),
+            "key": exp["key"], "kind": exp["kind"], "domain": exp["domain"],
+            "root": exp["root"], "client": alert.entity.ip,
+            "user_agent": ctx.get("user_agent"), "geo": ctx.get("geo"),
+            "network": ctx.get("network"), "first_seen": exp["first_seen"],
+            "last_seen": exp["last_seen"], "files_count": exp["files_count"],
+            "bytes_total": exp["bytes_total"], "files": exp["files"][:5],
+            "alert_id": alert_id, "new": exp.get("new", False),
+            "model_fired": alert.links.get("model_fired"),
+            "fused_pct": round(alert.confidence, 4),
+        }) + "\n")
 
     def _digest(self, runner: _UseCaseRunner, alert,
                 reason: str = "over daily budget — folded into digest") -> None:
@@ -662,6 +766,7 @@ class DetectionRuntime:
                     runner.dedup.restore_state(state.get("dedup") or {})
                     if runner.progression is not None:
                         runner.progression.restore_state(state.get("progression") or {})
+                    runner.exposures.restore_state(state.get("exposures") or {})
                 if isinstance(doc.get("last_event_at"), (int, float)):
                     self._last_event_at = float(doc["last_event_at"])
                 self.log("[runtime] resumed from checkpoint")
@@ -718,6 +823,7 @@ class DetectionRuntime:
                 "dedup": runner.dedup.export_state(),
                 **({"progression": runner.progression.export_state()}
                    if runner.progression is not None else {}),
+                "exposures": runner.exposures.export_state(),
             }
             for runner in self.runners
         }
@@ -742,7 +848,7 @@ class DetectionRuntime:
         """
         for runner in self.runners:
             for target in (runner.sink, runner.shadow_fh, runner.scores_fh,
-                           runner.digest_fh, runner.suppressed_fh):
+                           runner.digest_fh, runner.suppressed_fh, runner.exposures_fh):
                 if target is None:
                     continue
                 try:
@@ -833,7 +939,7 @@ class DetectionRuntime:
                 if hasattr(runner.sink, "close"):
                     runner.sink.close()
             for fh in (runner.shadow_fh, runner.scores_fh,
-                       runner.digest_fh, runner.suppressed_fh):
+                       runner.digest_fh, runner.suppressed_fh, runner.exposures_fh):
                 if fh:
                     fh.close()
         source.close()

@@ -143,8 +143,11 @@ def _write_events(path: Path, events: list[Event]) -> None:
                            **({"geo": {"country_iso_code": "US"}} if not e.is_internal else {})},
                 "http": {"request": {"method": "GET",
                                      **({"referrer": e.http_referrer} if e.http_referrer else {})},
-                         "response": {"status_code": e.status_code}},
-                "url": {"path": e.url_path},
+                         "response": {"status_code": e.status_code,
+                                      **({"body": {"bytes": e.body_bytes}}
+                                         if e.body_bytes is not None else {})}},
+                "url": {"path": e.url_path,
+                        **({"domain": e.url_domain} if e.url_domain else {})},
                 "user_agent": {"original": e.user_agent},
                 "event": {"original": e.original or "raw"},
             }) + "\n")
