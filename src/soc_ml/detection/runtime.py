@@ -206,6 +206,7 @@ class _UseCaseRunner:
             "alerts_delivered": 0,
             "alerts_folded": 0,
             "alerts_folded_by_source": 0,
+            "alerts_folded_by_campaign": 0,
             "alerts_digested": 0,
             # Digested because the progressive stage kept them below the queue
             # — part of alerts_digested, counted apart so "over budget" is not
@@ -462,8 +463,8 @@ class DetectionRuntime:
             if step.action == "fold":
                 runner.stats["alerts_folded"] += 1
                 self.stats["alerts_folded"] += 1
-                if step.folded_by == "source":
-                    runner.stats["alerts_folded_by_source"] += 1
+                if step.folded_by in ("source", "campaign"):
+                    runner.stats[f"alerts_folded_by_{step.folded_by}"] += 1
                 return "folded", {**detail, "folded_by": step.folded_by,
                                   "folded_into": step.folded_into,
                                   "into_finding": step.into_finding}
