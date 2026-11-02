@@ -9,8 +9,9 @@ Security posture, because this serves alert data:
 
 * binds ``127.0.0.1`` unless told otherwise, and refuses a non-loopback bind
   without either TLS or an explicit acknowledgement;
-* every mutating endpoint (model promotion) requires a bearer token, generated
-  at startup and printed once;
+* every mutating endpoint (model promotion, triage, re-verification) requires
+  the bearer token when one is set — generated at startup on a non-loopback
+  bind and printed once;
 * GET endpoints are read-only and serve no path from disk — the one HTML page
   is embedded, so there is no traversal surface.
 """
@@ -18,6 +19,7 @@ Security posture, because this serves alert data:
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import ssl
 import threading
@@ -106,9 +108,21 @@ class _Handler(BaseHTTPRequestHandler):
                     self._error(400, "slug is required")
                     return
                 self._json(state.records(kind, slug, limit))
+            elif route == "/api/alerts":
+                category = (query.get("category") or ["all"])[0]
+                limit = int((query.get("limit") or ["200"])[0])
+                self._json(state.alerts.list(category, limit))
+            elif route.startswith("/api/alerts/"):
+                detail = state.alerts.detail(route[len("/api/alerts/"):])
+                if detail is None:
+                    self._error(404, "no such alert")
+                    return
+                self._json(detail)
             elif route == "/api/health":
                 self._json({"ok": True, "requires_token": bool(
-                    self.server.token)})  # type: ignore[attr-defined]
+                    self.server.token),  # type: ignore[attr-defined]
+                    "read_only": bool(self.server.read_only),  # type: ignore[attr-defined]
+                    "timezone": state.alerts.timezone})
             else:
                 self._error(404, f"no route {route}")
         except KeyError as exc:
@@ -129,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(401, "bearer token required for this action")
             return
         if self.server.read_only:  # type: ignore[attr-defined]
-            self._error(403, "server started read-only; promotion is disabled")
+            self._error(403, "server started read-only; promotion and triage are disabled")
             return
 
         try:
@@ -142,7 +156,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "body must be JSON")
             return
 
-        slug = (body or {}).get("slug")
+        if not isinstance(body, dict):
+            self._error(400, "body must be a JSON object")
+            return
+        m = re.match(r"^/api/alerts/([^/]+)/(triage|verify)$", route)
+        if m:
+            try:
+                if m.group(2) == "triage":
+                    self._json(state.alerts.triage(m.group(1), body))
+                else:
+                    self._json({"results": state.alerts.verify_alert(m.group(1))})
+            except LookupError as exc:
+                self._error(404, str(exc))
+            except ValueError as exc:
+                self._error(400, str(exc))
+            except Exception as exc:
+                self._error(500, f"{type(exc).__name__}: {exc}")
+            return
+
+        slug = body.get("slug")
         if not slug:
             self._error(400, "slug is required")
             return
@@ -188,6 +220,9 @@ def serve(
     allow_remote: bool = False,
     verbose: bool = False,
     log=None,
+    allowed_domains: tuple[str, ...] = (),
+    kibana_url: str | None = None,
+    timezone: str = "Asia/Kolkata",
 ) -> int:
     # Unbuffered by default: redirected to a file, Python buffers stdout, and
     # the startup banner carries the bearer token — an operator who cannot see
@@ -212,8 +247,12 @@ def serve(
     if token is None and not read_only and not loopback:
         token = secrets.token_urlsafe(24)
 
-    state = DashboardState(data_root)
+    state = DashboardState(data_root, allowed_domains=allowed_domains,
+                           kibana_url=kibana_url, timezone=timezone)
     state.start_sampler()
+    if not read_only:
+        # Fetches each new exposure once from this host to confirm it is real.
+        state.alerts.start_verifier()
     httpd = build_server(state, host, port, token, read_only, verbose)
 
     scheme = "http"
@@ -225,7 +264,10 @@ def serve(
 
     shown = "localhost" if loopback else host
     log(f"[ui] dashboard on {scheme}://{shown}:{port}  (data root {state.data_root})")
-    log(f"[ui] mode: {'read-only' if read_only else 'promotion enabled'}")
+    log(f"[ui] mode: {'read-only' if read_only else 'promotion and triage enabled'}")
+    log("[ui] exposure verification: " + (
+        ("sites under " + ", ".join(allowed_domains)) if allowed_domains and not read_only
+        else "off (set exposure.verify_domains in the config)"))
     if token:
         log(f"[ui] bearer token for write actions: {token}")
     if not tls_cert and not loopback:
@@ -237,6 +279,7 @@ def serve(
         log("\n[ui] stopping")
     finally:
         state.stop_sampler()
+        state.alerts.stop_verifier()
         httpd.shutdown()
         httpd.server_close()
     return 0

@@ -102,6 +102,25 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
          border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:12px}
 .badbox{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.35);
         border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:12px}
+.okbox{background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.35);
+       border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:12px}
+nav.views{display:flex;gap:6px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+tr.q{cursor:pointer} tr.q:hover td{background:var(--panel2)}
+td.title{font-weight:600;max-width:640px;word-break:break-all}
+.who{color:var(--muted);font-size:12px}
+pre.box{white-space:pre-wrap;word-break:break-all;background:var(--panel2);
+        border:1px solid var(--line);border-radius:6px;padding:9px;margin:6px 0;
+        font-family:var(--mono);font-size:11.5px;max-height:320px;overflow:auto}
+.kv th{width:190px;text-transform:none;letter-spacing:0;font-size:12px}
+.lead{font-size:14.5px;line-height:1.6;margin:4px 0 2px}
+.section-title{font-size:12px;text-transform:uppercase;letter-spacing:.7px;
+               color:var(--muted);margin:0 0 8px;font-weight:650}
+label.chk{display:flex;gap:8px;align-items:flex-start;margin:6px 0;font-size:13px}
+textarea,select{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+                border-radius:6px;padding:6px 8px;font:inherit;font-size:13px}
+textarea{width:100%;min-height:70px}
+.tally b{font-size:20px}
 </style>
 </head>
 <body>
@@ -110,6 +129,10 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   <h1>soc-ml<small id="root">…</small></h1>
   <span id="livePill" class="pill dead"><i class="dot"></i><span>connecting</span></span>
   <span id="modePill" class="pill mode" hidden></span>
+  <nav class="views">
+    <button class="tab on" id="navAlerts" onclick="location.hash='#queue/incidents'">Alerts</button>
+    <button class="tab" id="navOps" onclick="location.hash='#ops'">Operations</button>
+  </nav>
   <div class="spacer"></div>
   <div class="kpis">
     <div class="kpi"><b id="kEps">–</b><span>events/sec</span></div>
@@ -123,6 +146,19 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 <main>
   <div id="alerts"></div>
 
+  <div id="viewAlerts">
+    <section>
+      <h2>Triage so far — share of delivered alerts an analyst confirmed</h2>
+      <div id="tally" class="grid g4"></div>
+    </section>
+    <section id="queueBox">
+      <div class="tabs" id="catTabs"></div>
+      <div class="card wrap" id="queue"><div class="empty">loading…</div></div>
+    </section>
+    <section id="detail" hidden></section>
+  </div>
+
+  <div id="viewOps" hidden>
   <section>
     <h2>Live ingestion</h2>
     <div class="card">
@@ -154,6 +190,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
       </tr></thead><tbody></tbody></table>
     </div>
   </section>
+  </div>
 </main>
 
 <dialog id="modal">
@@ -635,17 +672,369 @@ function renderCatalog(rows){
     </tr>`).join("");
 }
 
+/* ================================================================ alerts
+   Everything below renders alert data, and every string in an alert came
+   from a request someone else made (path, user-agent, Host header). It is
+   built with DOM nodes and textContent only — never innerHTML. */
+
+function h(tag, props, ...kids){
+  const el = document.createElement(tag);
+  if(props) for(const [k, v] of Object.entries(props)){
+    if(v === null || v === undefined || v === false) continue;
+    if(k === "class") el.className = v;
+    else if(k === "text") el.textContent = String(v);
+    else if(k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : String(v));
+  }
+  for(const kid of kids.flat(Infinity)){
+    if(kid === null || kid === undefined || kid === false) continue;
+    el.append(kid instanceof Node ? kid : String(kid));
+  }
+  return el;
+}
+function clear(el){ while(el.firstChild) el.removeChild(el.firstChild); return el; }
+
+let TZ = "Asia/Kolkata";
+function when(ts){
+  if(!ts) return "–";
+  const d = new Date(ts);
+  if(isNaN(d)) return String(ts);
+  const txt = d.toLocaleString("en-GB", {timeZone: TZ, year:"numeric", month:"short",
+    day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false});
+  return txt + (TZ === "Asia/Kolkata" ? " IST" : " " + TZ);
+}
+function sevBadge(sev, score){
+  const cls = sev === "critical" ? "b-bad" : sev === "high" ? "b-warn"
+            : sev === "medium" ? "b-info" : "b-dim";
+  return h("span", {class: "badge " + cls}, (sev || "?") + (score ? " " + score : ""));
+}
+const VERIFY_BADGE = {
+  confirmed: ["b-bad", "confirmed exposed"], likely: ["b-warn", "likely exposed"],
+  not_reproducible: ["b-ok", "not reproducible"], blocked_now: ["b-ok", "blocked now"],
+  redirected: ["b-dim", "redirected"], unreachable: ["b-dim", "unreachable"],
+  refused: ["b-dim", "not checked"],
+};
+function verifyBadge(v){
+  if(!v) return h("span", {class: "badge b-dim"}, "not yet checked");
+  const [cls, label] = VERIFY_BADGE[v.verdict] || ["b-dim", v.verdict || "?"];
+  return h("span", {class: "badge " + cls, title: v.summary || ""}, label);
+}
+const VERDICT_LABEL = {true_positive: "true positive", false_positive: "false positive",
+                       benign: "benign (authorised)"};
+function triageBadge(t){
+  if(!t || (!t.verdict && (!t.status || t.status === "open")))
+    return h("span", {class: "badge b-warn"}, "untriaged");
+  const cls = t.verdict === "true_positive" ? "b-bad" : t.verdict === "false_positive"
+            ? "b-dim" : t.verdict === "benign" ? "b-ok" : "b-info";
+  return h("span", {class: "badge " + cls},
+    (VERDICT_LABEL[t.verdict] || "no verdict") + (t.status ? " · " + t.status : ""));
+}
+
+const CATS = [["incidents", "Incidents"], ["scanner", "Scanner activity"],
+              ["bot", "Bots"], ["all", "All"]];
+const CAT_NAME = {exposure: "Incidents (exposures)", scanner: "Scanner activity", bot: "Bots"};
+let CAT = "incidents";
+
+function renderTally(tally){
+  const box = clear($("tally"));
+  const keys = ["exposure", "scanner", "bot"].filter(k => tally[k]);
+  if(!keys.length){ box.append(h("div", {class: "card empty"}, "No alerts delivered yet.")); return; }
+  for(const k of keys){
+    const t = tally[k];
+    box.append(h("div", {class: "card tally"},
+      h("div", {class: "sub", style: "margin-bottom:6px"}, CAT_NAME[k] || k),
+      h("div", {class: "row", style: "gap:14px"},
+        h("div", null, h("b", null, nf(t.true_positive)), h("div", {class: "who"}, "true pos.")),
+        h("div", null, h("b", null, nf(t.false_positive)), h("div", {class: "who"}, "false pos.")),
+        h("div", null, h("b", null, nf(t.benign)), h("div", {class: "who"}, "benign")),
+        h("div", null, h("b", null, nf(t.untriaged)), h("div", {class: "who"}, "untriaged"))),
+      h("div", {class: "note"}, t.precision === null
+        ? `${nf(t.total)} delivered · no verdicts yet`
+        : `precision ${(100 * t.precision).toFixed(0)}% (true ÷ true+false) · ${nf(t.total)} delivered`)));
+  }
+}
+
+async function loadQueue(){
+  let data;
+  try{ data = await api(`/api/alerts?category=${encodeURIComponent(CAT)}&limit=300`); }
+  catch(e){ clear($("queue")).append(h("div", {class: "badbox"}, e.message)); return; }
+  TZ = data.timezone || TZ;
+  renderTally(data.tally || {});
+  const tabs = clear($("catTabs"));
+  for(const [k, label] of CATS){
+    tabs.append(h("button", {class: "tab" + (k === CAT ? " on" : ""),
+      onclick: () => { location.hash = "#queue/" + k; }}, label));
+  }
+  const box = clear($("queue"));
+  if(!data.rows.length){
+    box.append(h("div", {class: "empty"}, CAT === "incidents"
+      ? "No exposure incidents. An incident is raised when a client downloads a sensitive "
+        + "file (repository, secrets, dump, backup, config) that is not the site's catch-all page."
+      : "Nothing in this category."));
+    return;
+  }
+  box.append(h("table", null,
+    h("thead", null, h("tr", null, ["Severity", "When", "What happened", "Who",
+      "Verified", "Triage"].map(t => h("th", null, t)))),
+    h("tbody", null, data.rows.map(r => h("tr", {class: "q",
+        onclick: () => { location.hash = "#alert/" + encodeURIComponent(r.id); }},
+      h("td", null, sevBadge(r.severity, r.severity_score)),
+      h("td", {class: "mono", style: "white-space:nowrap"}, when(r.timestamp)),
+      h("td", {class: "title"}, r.title),
+      h("td", null, h("div", {class: "mono"}, r.ip || "?"),
+        h("div", {class: "who"}, [r.network, r.country].filter(Boolean).join(" · ") || "–")),
+      h("td", null, r.category === "exposure" ? verifyBadge(r.verification) : "–"),
+      h("td", null, triageBadge(r.triage)))))));
+  box.append(h("div", {class: "note"},
+    `${nf(data.rows.length)} shown of ${nf(data.total)} · times in ${TZ}`));
+}
+
+/* ------------------------------------------------------------- detail */
+
+const SCANNER_ACTIONS = [
+  "Read the raw requests below: did any answer 2xx with a body for an admin, config or backup path?",
+  "If one did, open it from outside the network and treat it as an exposure.",
+  "If the address keeps scanning, block it at the edge firewall or WAF (note the ASN).",
+  "If every answer was 404/403, no action is needed beyond the verdict.",
+];
+const BOT_ACTIONS = [
+  "Check the user-agent and network: a search engine or monitoring service is benign.",
+  "If it is scraping or hammering one site, rate-limit or block the address range.",
+];
+
+function card(title, ...kids){
+  return h("div", {class: "card", style: "margin-bottom:14px"},
+    title ? h("div", {class: "section-title"}, title) : null, ...kids);
+}
+function kv(rows){
+  return h("table", {class: "kv"}, h("tbody", null, rows.filter(r => r[1] !== null
+    && r[1] !== undefined && r[1] !== "").map(([k, v]) =>
+      h("tr", null, h("th", null, k), h("td", {class: "mono"}, v)))));
+}
+function copyBtn(text){
+  return h("button", {class: "act ghost", onclick: async () => {
+    try{ await navigator.clipboard.writeText(text); toast("Copied", "ok"); }
+    catch(e){ toast("Copy failed — select the text instead", "err"); }
+  }}, "Copy");
+}
+
+async function loadDetail(id){
+  const box = clear($("detail"));
+  box.append(h("div", {class: "empty"}, "loading…"));
+  let d;
+  try{ d = await api("/api/alerts/" + encodeURIComponent(id)); }
+  catch(e){ clear(box).append(h("div", {class: "badbox"}, "Could not load alert: " + e.message)); return; }
+  TZ = d.timezone || TZ;
+  renderDetail(d);
+}
+
+function renderDetail(d){
+  const box = clear($("detail"));
+  const s = d.summary, a = d.alert, ex = d.exposures || [];
+  const act = a.activity || {}, src = a.source || {}, geo = src.geo || {};
+  const asn = src.as || {}, expl = a.explanation || {};
+
+  box.append(h("div", {class: "row", style: "margin-bottom:12px"},
+    h("button", {class: "act ghost", onclick: () => { location.hash = "#queue/" + CAT; }}, "← Back to queue"),
+    sevBadge(s.severity, s.severity_score),
+    h("span", {class: "badge b-info"}, CAT_NAME[s.category] || s.category),
+    s.category === "exposure" ? verifyBadge(s.verification) : null,
+    triageBadge(d.triage)));
+  box.append(h("h2", {style: "font-size:16px;text-transform:none;letter-spacing:0;color:var(--fg)"}, s.title));
+  box.append(h("div", {class: "who", style: "margin-bottom:12px"},
+    `${when(s.timestamp)} · alert ${s.id} · ${s.usecase}`));
+
+  box.append(card("What happened", h("div", {class: "lead"}, expl.narrative || "(no narrative)")));
+
+  if(ex.length){
+    box.append(card("Is it real?", ex.map(e => {
+      const v = e.verification;
+      return h("div", {style: "margin-bottom:14px"},
+        h("div", {class: "row"}, h("b", null, e.title || e.kind),
+          h("span", {class: "mono who"}, `${e.domain}${e.root}`), verifyBadge(v)),
+        v ? h("div", {class: v.verdict === "confirmed" || v.verdict === "likely" ? "badbox"
+                       : v.verdict === "not_reproducible" || v.verdict === "blocked_now" ? "okbox"
+                       : "warnbox", style: "margin:8px 0"},
+              h("div", null, v.summary || v.verdict),
+              h("div", {class: "who"}, [v.signature && ("signature: " + v.signature),
+                v.status && ("HTTP " + v.status), v.content_type,
+                v.checked_at && ("checked " + when(v.checked_at))].filter(Boolean).join(" · ")))
+          : h("div", {class: "note"}, "The console checks every new exposure once within a minute."),
+        h("div", {class: "row", style: "margin:6px 0"},
+          h("button", {class: "act", onclick: () => reverify(s.id)}, "Re-check now"),
+          h("span", {class: "note", style: "margin:0"},
+            "Fetches the first 2 KB once from this host and keeps only the verdict, never the content.")),
+        e.curl ? h("div", null,
+          h("div", {class: "who", style: "margin-top:8px"}, "Verify it yourself:"),
+          h("div", {class: "row"}, h("pre", {class: "box", style: "flex:1"}, e.curl), copyBtn(e.curl)),
+          h("div", {class: "note"}, e.how_to_read)) : null,
+        e.files && e.files.length ? h("details", null,
+          h("summary", {style: "cursor:pointer;color:var(--accent);font-size:12.5px"},
+            `${nf(e.files_count)} file(s) downloaded, ${nf(e.bytes_total)} bytes`),
+          h("table", null, h("thead", null, h("tr", null, h("th", null, "path"), h("th", null, "status"), h("th", null, "bytes"))),
+            h("tbody", null, e.files.map(f => h("tr", null, h("td", {class: "mono"}, f.path),
+              h("td", null, String(f.status)), h("td", null, nf(f.bytes))))))) : null);
+    })));
+    box.append(card("Why it matters", ex.map(e => h("p", null, h("b", null, (e.title || e.kind) + ": "), e.impact || ""))));
+  }
+
+  // Response checklist and verdict are one form, saved together.
+  const actions = ex.length ? ex.flatMap(e => e.actions || [])
+                : s.category === "bot" ? BOT_ACTIONS : SCANNER_ACTIONS;
+  const prev = d.triage || {};
+  const checks = actions.map((t, i) => h("input", {type: "checkbox",
+    checked: (prev.checklist || [])[i] ? true : null}));
+  const verdictSel = h("select", null,
+    h("option", {value: ""}, "— verdict —"),
+    ["true_positive", "false_positive", "benign"].map(v =>
+      h("option", {value: v, selected: prev.verdict === v ? true : null}, VERDICT_LABEL[v])));
+  const statusSel = h("select", null, ["open", "investigating", "resolved"].map(v =>
+    h("option", {value: v, selected: (prev.status || "open") === v ? true : null}, v)));
+  const note = h("textarea", {placeholder: "What you checked, who you told, ticket number…"});
+  note.value = prev.note || "";
+  box.append(card("What to do now",
+    actions.map((t, i) => h("label", {class: "chk"}, checks[i], h("span", null, t))),
+    h("div", {class: "section-title", style: "margin-top:14px"}, "Your verdict"),
+    h("div", {class: "row"}, verdictSel, statusSel,
+      h("button", {class: "act", onclick: async () => {
+        if(!await ensureToken()) return;
+        try{
+          await api(`/api/alerts/${encodeURIComponent(s.id)}/triage`, {method: "POST",
+            body: JSON.stringify({verdict: verdictSel.value || null, status: statusSel.value,
+              note: note.value, checklist: checks.map(c => c.checked)})});
+          toast("Verdict saved", "ok"); loadDetail(s.id);
+        }catch(e){ toast("Save failed: " + e.message, "err"); }
+      }}, "Save")),
+    h("div", {style: "margin-top:8px"}, note),
+    h("div", {class: "note"}, "True positive: the alert is right and needed action. False positive: "
+      + "nothing happened (e.g. the verification shows a catch-all page). Benign: real, but "
+      + "authorised (your own scanner, a known partner)."),
+    (d.triage_history || []).length > 1 ? h("details", null,
+      h("summary", {style: "cursor:pointer;color:var(--accent);font-size:12.5px"}, "History"),
+      (d.triage_history || []).slice().reverse().map(t => h("div", {class: "who"},
+        `${when(t.at)} — ${VERDICT_LABEL[t.verdict] || "no verdict"} · ${t.status}${t.note ? " — " + t.note : ""}`))) : null));
+
+  box.append(card("Who", kv([
+    ["address", s.ip],
+    ["network", [asn.number ? "AS" + asn.number : null, (asn.organization || {}).name].filter(Boolean).join(" ")],
+    ["location", [geo.city_name, geo.country_name || geo.country_iso_code].filter(Boolean).join(", ")],
+    ["user agent", (a.user_agent || {}).original],
+    ["sites", (act.domains || []).map(x => `${x[0]} (${x[1]})`).join(", ")],
+    ["window", act.window_start ? `${when(act.window_start)} → ${when(act.window_end)}` : null],
+    ["requests", act.events !== undefined && act.events !== null
+      ? `${nf(act.events)} requests, ${nf(act.distinct_paths)} distinct paths, ${nf(act.n404)} × 404` : null],
+    ["responses", act.status_counts ? Object.entries(act.status_counts).map(([k, v]) => `${k}: ${nf(v)}`).join("  ") : null],
+    ["same address, all agents", act.source_events
+      ? `${nf(act.source_events)} requests with ${nf(act.source_user_agents)} user-agent(s)` : null],
+  ])));
+
+  if(ex.length){
+    const others = d.other_clients || [];
+    box.append(card(`Other clients that downloaded this (${nf(d.distinct_clients)} distinct)`,
+      others.length ? h("div", {class: "wrap"}, h("table", null,
+        h("thead", null, h("tr", null, ["When", "Client", "Network", "Country", "Files", "Bytes", ""].map(t => h("th", null, t)))),
+        h("tbody", null, others.map(c => h("tr", null,
+          h("td", {class: "mono", style: "white-space:nowrap"}, when(c.timestamp)),
+          h("td", {class: "mono"}, c.client || "?"),
+          h("td", null, [c.asn ? "AS" + c.asn : null, c.network].filter(Boolean).join(" ") || "–"),
+          h("td", null, c.country || "–"),
+          h("td", null, nf(c.files_count)), h("td", null, nf(c.bytes_total)),
+          h("td", null, c.this_alert ? h("span", {class: "badge b-info"}, "this alert") : ""))))))
+      : h("div", {class: "empty"}, "No download records yet for this exposure.")));
+  }
+
+  const same = d.same_ip || [];
+  box.append(card(`Other alerts from ${s.ip} (${nf(same.length)})`,
+    same.length ? h("table", null, h("tbody", null, same.map(r => h("tr", {class: "q",
+        onclick: () => { location.hash = "#alert/" + encodeURIComponent(r.id); }},
+      h("td", null, sevBadge(r.severity)), h("td", {class: "mono"}, when(r.timestamp)),
+      h("td", null, r.title), h("td", null, triageBadge(r.triage))))))
+    : h("div", {class: "empty"}, "None in the alert files.")));
+
+  const inv = d.investigate || {};
+  const ev = expl.evidence_events || [];
+  box.append(card("Raw logs",
+    ev.length ? [h("div", {class: "who"}, `${ev.length} log line(s) captured with the alert:`),
+                 h("pre", {class: "box"}, ev.join("\n\n"))]
+              : h("div", {class: "empty"}, "No log lines were captured with this alert."),
+    h("div", {class: "who", style: "margin-top:10px"},
+      `Everything this address did on this site, ${when(inv.from)} → ${when(inv.to)} (index ${inv.index}):`),
+    inv.kibana_url && /^https?:\/\//.test(inv.kibana_url)
+      ? h("div", {style: "margin:6px 0"}, h("a", {href: inv.kibana_url, target: "_blank",
+          rel: "noopener noreferrer"}, "Open in Kibana Discover ↗"))
+      : h("div", {class: "note"}, "Set siem.kibana_url in the config to get a Kibana link here."),
+    inv.kql ? h("div", {class: "row"}, h("pre", {class: "box", style: "flex:1"}, "KQL: " + inv.kql), copyBtn(inv.kql)) : null,
+    h("div", {class: "row"}, h("pre", {class: "box", style: "flex:1"}, inv.esql || ""), copyBtn(inv.esql || ""))));
+
+  const feats = expl.top_features || [];
+  box.append(h("details", {class: "card"},
+    h("summary", {style: "cursor:pointer;color:var(--accent)"}, "Technical detail (model view)"),
+    h("div", {class: "note"}, "Why the models scored this window as they did. Useful for tuning; "
+      + "not needed to decide whether the alert is real."),
+    kv([["scores", JSON.stringify(a.scores || {})], ["model versions", JSON.stringify(a.model_versions || {})],
+        ["rule", `${(a.rule || {}).id || ""} ${(a.rule || {}).name || ""}`]]),
+    feats.length ? h("table", null,
+      h("thead", null, h("tr", null, ["feature", "value", "median here", "p99 here", "deviation"].map(t => h("th", null, t)))),
+      h("tbody", null, feats.map(f => h("tr", null, h("td", {class: "mono"}, f.feature),
+        h("td", {class: "mono"}, String(f.value)), h("td", {class: "mono"}, String(f.population_p50)),
+        h("td", {class: "mono"}, String(f.population_p99)), h("td", null, String(f.deviation)))))) : null,
+    h("pre", {class: "box"}, JSON.stringify(a.links || {}, null, 2))));
+}
+
+async function reverify(id){
+  if(!await ensureToken()) return;
+  try{
+    const r = await api(`/api/alerts/${encodeURIComponent(id)}/verify`, {method: "POST", body: "{}"});
+    const res = (r.results || [])[0];
+    toast(res ? (res.rate_limited ? "Checked under a minute ago — showing that result" : (res.summary || res.verdict))
+              : "Nothing to check", "ok");
+    loadDetail(id);
+  }catch(e){ toast("Re-check failed: " + e.message, "err"); }
+}
+
+/* -------------------------------------------------------------- routing */
+
+let VIEW = "queue";
+function route(){
+  const hash = location.hash || "#queue/incidents";
+  const [kind, arg] = hash.slice(1).split("/");
+  const ops = kind === "ops";
+  $("viewAlerts").hidden = ops; $("viewOps").hidden = !ops;
+  $("navAlerts").className = "tab" + (ops ? "" : " on");
+  $("navOps").className = "tab" + (ops ? " on" : "");
+  if(ops){ VIEW = "ops"; refreshOps(); return; }
+  if(kind === "alert" && arg){
+    VIEW = "detail";
+    $("queueBox").hidden = true; $("detail").hidden = false;
+    loadDetail(decodeURIComponent(arg));
+    window.scrollTo(0, 0);
+    return;
+  }
+  VIEW = "queue";
+  CAT = CATS.some(c => c[0] === arg) ? arg : "incidents";
+  $("queueBox").hidden = false; $("detail").hidden = true;
+  loadQueue();
+}
+window.addEventListener("hashchange", route);
+
 /* ----------------------------------------------------------------- loop */
+
+async function refreshOps(){
+  try{
+    const [ts, md, cat] = await Promise.all([
+      api("/api/timeseries"), api("/api/models"), api("/api/catalog"),
+    ]);
+    if(LAST) renderUseCases(LAST);
+    renderChart(ts); renderModels(md); renderCatalog(cat.usecases);
+  }catch(e){ /* the header pill reports reachability */ }
+}
 
 async function refresh(){
   try{
-    const [ov, ts, md, cat] = await Promise.all([
-      api("/api/overview"), api("/api/timeseries"),
-      api("/api/models"), api("/api/catalog"),
-    ]);
+    const ov = await api("/api/overview");
     LAST = ov;
-    renderHeader(ov); renderChart(ts); renderUseCases(ov);
-    renderModels(md); renderCatalog(cat.usecases);
+    renderHeader(ov);
+    if(VIEW === "ops") refreshOps();
   }catch(e){
     const pill = $("livePill");
     pill.className = "pill dead";
@@ -653,8 +1042,15 @@ async function refresh(){
   }
 }
 
+let TICK = 0;
+route();
 refresh();
-setInterval(refresh, 3000);
+setInterval(() => {
+  refresh();
+  // The queue refreshes itself; an open alert does not, so a half-written
+  // note is never wiped by a poll.
+  if(VIEW === "queue" && ++TICK % 5 === 0) loadQueue();
+}, 3000);
 </script>
 </body>
 </html>

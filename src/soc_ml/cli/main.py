@@ -648,7 +648,22 @@ def cmd_ui(args: argparse.Namespace) -> int:
     """Serve the operator dashboard over HTTP(S)."""
     from soc_ml.web.server import serve
 
+    # Analyst-side settings live in the config: which sites the console may
+    # fetch to verify an exposure, and where Kibana is for the raw-log link.
+    raw: dict = {}
+    try:
+        from soc_ml.core import load_config
+        raw = load_config(args.config).raw or {}
+    except Exception:
+        raw = {}
+    exposure = raw.get("exposure") or {}
+    siem = raw.get("siem") or {}
+    domains = exposure.get("verify_domains") or []
+    tz = raw.get("timezone")
     return serve(
+        allowed_domains=tuple(str(d) for d in domains if d),
+        kibana_url=siem.get("kibana_url"),
+        timezone=tz if isinstance(tz, str) and "/" in tz else "Asia/Kolkata",
         data_root=args.out,
         host=args.host,
         port=args.port,

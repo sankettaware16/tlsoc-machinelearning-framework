@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from soc_ml.registry.store import ModelRegistry
+from soc_ml.web.alerts import AlertBook
 
 __all__ = ["DashboardState"]
 
@@ -94,8 +95,14 @@ def _age_s(stamp: str | None) -> float | None:
 class DashboardState:
     """All dashboard reads go through here."""
 
-    def __init__(self, data_root: str | Path, repo_root: Path | None = None) -> None:
+    def __init__(self, data_root: str | Path, repo_root: Path | None = None, *,
+                 verify_fn=None, allowed_domains: tuple[str, ...] = (),
+                 kibana_url: str | None = None, timezone: str = "Asia/Kolkata") -> None:
         self.data_root = Path(data_root)
+        #: The analyst's view: alert queue, detail, triage, verification.
+        self.alerts = AlertBook(self.data_root, verify_fn=verify_fn,
+                                allowed_domains=tuple(allowed_domains),
+                                kibana_url=kibana_url, timezone=timezone)
         self.state_dir = self.data_root / "state"
         self.alerts_dir = self.data_root / "alerts"
         self.registry = ModelRegistry(self.data_root)
