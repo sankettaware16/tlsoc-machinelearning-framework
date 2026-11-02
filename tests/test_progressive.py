@@ -169,7 +169,10 @@ def test_a_sustained_scanner_reaches_the_queue_once(tmp_path: Path) -> None:
                          for r in after)
 
     alert_doc = _rows(tmp_path / "alerts" / "web_recon.ndjson")[0]
-    assert alert_doc["alert"]["severity"] == "high", "one detector alone never claims critical"
+    assert alert_doc["alert"]["severity"] == "low", "a scan that exposed nothing is information"
+    assert alert_doc["alert"]["category"] == "scanner"
+    assert alert_doc["links"]["severity_before_ceiling"] == "high", (
+        "one detector alone never claims critical")
     assert alert_doc["links"]["progressive"]["stage"] == "high"
     assert "Sustained" in alert_doc["explanation"]["narrative"]
     digest = _rows(tmp_path / "state" / "web_recon_digest.ndjson")

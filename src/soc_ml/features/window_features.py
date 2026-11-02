@@ -352,7 +352,9 @@ class WindowFeatureBuilder:
         exp["last_seen"] = event.timestamp.isoformat()
         known = exp["files"].get(path)
         if known is None or size > known[1]:
-            exp["files"][path] = (status, size)
+            # The log line of the download itself: the window's evidence lines
+            # are its last ten requests, usually the scan's 404s around it.
+            exp["files"][path] = (status, size, (event.original or "")[:2000])
 
     def _confirmed_exposures(self, source: _SourceAgg) -> list[dict]:
         """The address's exposures whose files are not the site's catch-all page.
@@ -365,13 +367,14 @@ class WindowFeatureBuilder:
         for exp in source.exposures.values():
             sizes = self._site_sizes.get(exp["domain"], {})
             real = []
-            for path, (status, size) in exp["files"].items():
+            for path, (status, size, line) in exp["files"].items():
                 others = sizes.get(size, set()) - {path}
                 if len(others) >= 2:
                     continue  # the site's answer to many paths
                 if len(source.unserved_ok_sizes.get(size, ())) >= 2:
                     continue  # this address's own probes got that same page
-                real.append({"path": path, "status": status, "bytes": size})
+                real.append({"path": path, "status": status, "bytes": size,
+                             **({"line": line} if line else {})})
             if not real:
                 continue
             real.sort(key=lambda f: -f["bytes"])

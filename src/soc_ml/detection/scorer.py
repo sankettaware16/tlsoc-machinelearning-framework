@@ -311,10 +311,11 @@ class Scorer:
         kinds = [KINDS[e["kind"]] for e in exposures if e["kind"] in KINDS]
         worst = max(kinds, key=lambda k: _KIND_SCORE[k.severity]) if kinds else None
         if worst is not None:
-            # Severity is what was exposed, not how odd the traffic looked.
-            alert.severity_score = max(_KIND_SCORE[worst.severity],
-                                       alert.severity_score if fired else 0)
-            alert.severity = Severity.from_score(alert.severity_score)
+            # Severity is what was exposed, not how odd the traffic looked: a
+            # scanner that trips the models while fetching a stock web.config
+            # has exposed a config file, not a critical incident.
+            alert.severity_score = _KIND_SCORE[worst.severity]
+            alert.severity = worst.severity
         alert.links["category"] = "exposure"
         alert.links["rule_name"] = f"{self.usecase_cls.title}: sensitive file exposure"
         alert.links["exposures"] = [
@@ -323,6 +324,9 @@ class Scorer:
              "alertable": KINDS[e["kind"]].alert}
             for e in exposures if e["kind"] in KINDS]
         alert.links["model_fired"] = fired
+        # Evidence leads with the downloads themselves, then the window's lines.
+        lines = [f["line"] for e in exposures for f in e.get("files", []) if f.get("line")][:5]
+        alert.evidence = lines + [x for x in alert.evidence if x not in lines][:10 - len(lines)]
         alert.narrative = exposure_narrative(
             alert.entity.ip, alert.links["exposures"], evidence,
             fired=fired, fused=alert.confidence)

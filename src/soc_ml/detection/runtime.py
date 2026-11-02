@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 import soc_ml.models  # noqa: F401 — register model plugins
 import soc_ml.usecases  # noqa: F401 — register use-case plugins
 from soc_ml.alerting.file_sink import FileSink
+from soc_ml.core.contracts import Severity
 from soc_ml.core.plugins import (
     Sink,
     UseCase,
@@ -76,6 +77,8 @@ __all__ = ["DetectionRuntime", "RuntimeConfig"]
 
 _DRIFT_RESERVOIR = 4000  # live feature values retained per feature for PSI
 _ADDRESS_MEMORY_EVERY_S = 600.0  # persist address memory (MBs) far less often than offsets
+#: Top of the "low" band (SPEC_DIGEST §7): where a scan that exposed nothing sits.
+_SCANNER_CEILING = 44
 
 
 def resolve_timezone(name: str | None) -> tzinfo:
@@ -522,6 +525,14 @@ class DetectionRuntime:
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
             return "digested", {**detail, "digest_reason": "budget"}
+        if outcome.alert.links.get("category") == "scanner":
+            # A scan that got nothing sensitive back is information for the
+            # blocklist, not an incident: delivered at low so the incident
+            # queue and SIEM rules key on exposures (D-040).
+            if outcome.alert.severity_score > _SCANNER_CEILING:
+                outcome.alert.links["severity_before_ceiling"] = outcome.alert.severity.value
+                outcome.alert.severity_score = _SCANNER_CEILING
+                outcome.alert.severity = Severity.from_score(_SCANNER_CEILING)
         runner.sink.emit_alert(outcome.alert)
         runner.stats["alerts_delivered"] += 1
         self.stats["alerts_delivered"] += 1

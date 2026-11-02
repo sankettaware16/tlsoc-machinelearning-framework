@@ -228,3 +228,11 @@ def test_a_status_page_is_confirmed_although_it_is_html() -> None:
         b"<h1>Apache Server Status for lib.example.edu</h1><dl><dt>Server Version: ",
         status=200, ctype="text/html"))
     assert out["verdict"] == "confirmed" and out["signature"] == "server status"
+
+
+def test_the_download_line_leads_the_evidence(tmp_path: Path) -> None:
+    scan = [_ev(f"/probe{i}", 404, size=150 + i, seconds=i) for i in range(12)]
+    _run(tmp_path, scan[:3] + [_ev("/.env", size=913, seconds=3.5)] + scan[3:])
+    doc = _rows(tmp_path / "alerts" / "web_recon.ndjson")[0]
+    assert doc["explanation"]["evidence_events"][0] == f"{SITE} GET /.env 200 913"
+    assert doc["exposure"][0]["files"][0]["line"] == f"{SITE} GET /.env 200 913"
