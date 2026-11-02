@@ -73,6 +73,7 @@ def replay(scores: Path, start: datetime, end: datetime, tz: ZoneInfo) -> dict:
             c = per_day[day]
             c["fires"] += 1
             c["queued"] += step.action == "deliver"
+            c["queued_escalated"] += step.escalated
             c["recorded_queued"] += _recorded_queued(row)
             if step.action == "fold":
                 c[f"folded_by_{step.folded_by}"] += 1
