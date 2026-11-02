@@ -218,3 +218,13 @@ def test_a_forged_host_is_never_contacted() -> None:
         opener = _Opener(_Resp(b"x"))
         out = verify(host, "/.env", "secrets", allowed_domains=("example.edu",), opener=opener)
         assert out["verdict"] == "refused" and opener.urls == [], host
+
+
+def test_a_status_page_is_confirmed_although_it_is_html() -> None:
+    """prod, 31 Oct: a library catalogue served Apache's /server-status; the
+    first verifier rejected it as "an ordinary web page"."""
+    out, _ = _verify("debug", "/server-status", _Resp(
+        b"<!DOCTYPE HTML PUBLIC><html><head><title>Apache Status</title></head><body>"
+        b"<h1>Apache Server Status for lib.example.edu</h1><dl><dt>Server Version: ",
+        status=200, ctype="text/html"))
+    assert out["verdict"] == "confirmed" and out["signature"] == "server status"

@@ -367,6 +367,20 @@ def _signature(kind: str, root: str, body: bytes) -> str | None:
         if head.startswith(b"revlogv1") or b"dotencode" in head or b"fncache" in head:
             return "hg requires"
         return None
+    if kind == "debug":
+        # Status and phpinfo pages are HTML by nature: match before the HTML check.
+        if b"phpinfo()" in head or b"PHP Version" in head:
+            return "phpinfo"
+        if (b"Server Version:" in head or b"Apache Server Status" in head
+                or b"Server Status for" in head):
+            return "server status"
+        if _HTML.match(head):
+            return None
+        if re.search(rb"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", head) or b"Stack trace" in head:
+            return "log file"
+        if head.lstrip().startswith(b"{") and (b"activeProfiles" in head or b"propertySources" in head):
+            return "actuator env"
+        return None
     if _HTML.match(head):
         return None
     if kind == "secrets":
@@ -415,16 +429,6 @@ def _signature(kind: str, root: str, body: bytes) -> str | None:
                              (b"#!/", "script"), (b"import ", "Python source")):
             if marker in head:
                 return name
-        return None
-    if kind == "debug":
-        if b"phpinfo()" in head or b"PHP Version" in head:
-            return "phpinfo"
-        if b"Server Version:" in head or b"Apache Server Status" in head:
-            return "server status"
-        if re.search(rb"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", head) or b"Stack trace" in head:
-            return "log file"
-        if head.lstrip().startswith(b"{") and (b"activeProfiles" in head or b"propertySources" in head):
-            return "actuator env"
         return None
     if kind == "server_config":
         if b"<configuration" in head and b"<?xml" in head[:64]:
