@@ -327,3 +327,231 @@ def test_a_passing_verdict_is_shown_and_promotable(tmp_path: Path) -> None:
     st = DashboardState(_deployment(tmp_path))
     v = {v["version"]: v for v in st.models()["usecases"][0]["versions"]}["v20260818T090000"]
     assert v["approval"]["verdict"] == "PASS" and v["promotable"] is True
+
+
+# ------------------------------ analyst view ------------------------------ #
+# The console's job for an analyst: what happened, is it real, who, what else,
+# what to do — and a recorded verdict. Fixtures are written by the real
+# alert_document(), so a renamed field in the sink fails here, not in prod.
+
+_KEY = "www.example.edu|/.git/"
+
+
+def _exposure_alert(alert_id: str, ip: str, minutes: int = 0):
+    from soc_ml.alerting.file_sink import alert_document
+    from soc_ml.core.contracts import Alert, EntityKey, Severity
+    from soc_ml.features.exposure import KINDS
+
+    kind = KINDS["vcs"]
+    ts = datetime(2026, 10, 22, 15, 20, tzinfo=UTC) + timedelta(minutes=minutes)
+    exposure = {
+        "key": _KEY, "kind": "vcs", "root": "/.git/", "domain": "www.example.edu",
+        "first_seen": ts.isoformat(), "last_seen": ts.isoformat(), "files_count": 3,
+        "bytes_total": 912, "files": [{"path": "/.git/config", "status": 200, "bytes": 311}],
+        "title": kind.title, "impact": kind.impact, "actions": list(kind.actions),
+        "alertable": True,
+    }
+    return alert_document(Alert(
+        id=alert_id, timestamp=ts, usecase="web_recon",
+        entity=EntityKey(server="logserver", ip=ip, ua_hash="h"),
+        severity=Severity.CRITICAL, severity_score=95, confidence=0.99,
+        narrative=f"{ip} downloaded 3 files of a repository.",
+        evidence=[f"... access: www.example.edu {ip} GET /.git/config 200"],
+        links={"rule_id": "UC-02", "rule_name": "web recon: exposure",
+               "category": "exposure", "exposures": [exposure],
+               "context": {"window_start": (ts - timedelta(minutes=5)).isoformat(),
+                           "window_end": ts.isoformat(), "user_agent": "git/2.40",
+                           "events": 40, "distinct_paths": 38, "n404": 2,
+                           "status_counts": {"2xx": 38, "3xx": 0, "4xx": 2, "5xx": 0},
+                           "domains": [["www.example.edu", 40]],
+                           "geo": {"country_iso_code": "ZZ", "country_name": "Testland"},
+                           "network": {"number": 64500, "organization": "Example Hosting"}}},
+    ))
+
+
+def _analyst(root: Path, **kw) -> DashboardState:
+    _deployment(root)
+    alerts = root / "alerts" / "web_recon.ndjson"
+    with alerts.open("a") as fh:   # the fixture's legacy alert "1" stays first
+        fh.write(json.dumps(_exposure_alert("exp-1", "203.0.113.38")) + "\n")
+        fh.write(json.dumps(_exposure_alert("exp-2", "203.0.113.77", minutes=30)) + "\n")
+    with (root / "state" / "web_recon_exposures.ndjson").open("w") as fh:
+        for ip, aid in (("203.0.113.38", "exp-1"), ("203.0.113.77", "exp-2"),
+                        ("198.51.100.4", "exp-1")):
+            fh.write(json.dumps({"@timestamp": "2026-10-22T15:20:00+00:00", "key": _KEY,
+                                 "client": ip, "network": {"organization": "Net"},
+                                 "files_count": 3, "bytes_total": 912,
+                                 "alert_id": aid}) + "\n")
+        fh.write(json.dumps({"key": "other.example.edu|/.env", "client": "203.0.113.9",
+                             "alert_id": "zzz"}) + "\n")
+    return DashboardState(root, **kw)
+
+
+def test_the_queue_joins_verification_and_triage(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)
+    (tmp_path / "state" / "web_recon_verifications.ndjson").write_text(json.dumps({
+        "alert_id": "exp-1", "key": _KEY, "verdict": "confirmed",
+        "summary": "Confirmed", "signature": "git HEAD",
+        "checked_at": "2026-10-22T15:21:00+00:00"}) + "\n")
+    st.alerts.triage("exp-1", {"verdict": "false_positive", "status": "open"})
+    st.alerts.triage("exp-1", {"verdict": "true_positive", "status": "resolved"})
+
+    got = st.alerts.list("incidents")
+    assert [r["id"] for r in got["rows"]] == ["exp-2", "exp-1"], "newest first"
+    exp1 = got["rows"][1]
+    assert exp1["title"].startswith("Source-code repository") and \
+        "https://www.example.edu/.git/" in exp1["title"]
+    assert exp1["network"] == "Example Hosting" and exp1["country"] == "Testland"
+    assert exp1["verification"]["verdict"] == "confirmed"
+    assert exp1["triage"]["verdict"] == "true_positive", "the latest verdict wins"
+    # Verification is about the exposure, so the other alert of the same key shows it.
+    assert got["rows"][0]["verification"]["verdict"] == "confirmed"
+    tally = got["tally"]["exposure"]
+    assert tally == {"total": 2, "true_positive": 1, "false_positive": 0, "benign": 0,
+                     "untriaged": 1, "precision": 1.0}
+
+
+def test_a_pre_schema_alert_still_renders(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)
+    old = next(r for r in st.alerts.list("all")["rows"] if r["id"] == "1")
+    assert old["category"] == "scanner" and old["ip"] == "10.0.0.9"
+    assert old["title"].startswith("Scanner — 10.0.0.9")
+    detail = st.alerts.detail("1")
+    assert detail["exposures"] == [] and detail["other_clients"] == []
+    assert "10.0.0.9" in detail["investigate"]["esql"]
+
+
+def test_detail_answers_who_else_and_how_to_check(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)
+    d = st.alerts.detail("exp-1")
+    assert {c["client"] for c in d["other_clients"]} == {
+        "203.0.113.38", "203.0.113.77", "198.51.100.4"}, "same key only"
+    assert d["distinct_clients"] == 3
+    assert sum(c["this_alert"] for c in d["other_clients"]) == 2
+    ex = d["exposures"][0]
+    assert ex["curl"] == "curl -sk -r 0-300 'https://www.example.edu/.git/HEAD'"
+    assert "every path" in ex["how_to_read"]
+    inv = d["investigate"]
+    assert 'source.ip == "203.0.113.38"' in inv["esql"]
+    assert 'url.domain == "www.example.edu"' in inv["esql"]
+    assert inv["kibana_url"] is None, "no link without siem.kibana_url"
+    assert st.alerts.detail("nope") is None and st.alerts.detail("../../etc") is None
+
+
+def test_the_kibana_link_needs_an_http_base_and_quotes_its_values(tmp_path: Path) -> None:
+    st = _analyst(tmp_path, kibana_url="https://kibana.example.edu:5601/")
+    link = st.alerts.detail("exp-1")["investigate"]["kibana_url"]
+    assert link.startswith("https://kibana.example.edu:5601/app/discover#/?_g=")
+    assert "203.0.113.38" in link and " " not in link
+    bad = _analyst(tmp_path / "b", kibana_url="javascript:alert(1)")
+    assert bad.alerts.detail("exp-1")["investigate"]["kibana_url"] is None
+
+
+def test_a_forged_host_never_reaches_the_query_text(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)
+    doc = _exposure_alert("exp-x", "203.0.113.5")
+    doc["url"]["domain"] = 'evil" OR 1==1 | DROP'
+    doc["exposure"][0]["domain"] = "evil'; rm -rf /"
+    with (tmp_path / "alerts" / "web_recon.ndjson").open("a") as fh:
+        fh.write(json.dumps(doc) + "\n")
+    d = st.alerts.detail("exp-x")
+    assert "evil" not in d["investigate"]["esql"]
+    assert d["exposures"][0]["curl"] is None, "no command is built for an invalid site"
+
+
+def test_triage_validates_and_records(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)
+    with pytest.raises(ValueError):
+        st.alerts.triage("exp-1", {"verdict": "maybe"})
+    with pytest.raises(ValueError):
+        st.alerts.triage("exp-1", {"status": "closed-forever"})
+    with pytest.raises(LookupError):
+        st.alerts.triage("no-such", {"verdict": "benign"})
+    row = st.alerts.triage("exp-1", {"verdict": "benign", "status": "investigating",
+                                     "note": "our own pentest", "checklist": [1, 0, 1]})
+    assert row["checklist"] == [True, False, True] and row["by"] == "operator"
+    lines = (tmp_path / "state" / "triage.ndjson").read_text().splitlines()
+    assert json.loads(lines[-1])["note"] == "our own pentest"
+
+
+def _fake_verify(calls):
+    def verify(domain, root, kind, *, allowed_domains):
+        calls.append((domain, root, kind, allowed_domains))
+        return {"verdict": "not_reproducible", "summary": "catch-all page",
+                "checked_at": "2026-10-22T16:00:00+00:00", "domain": domain, "root": root}
+    return verify
+
+
+def test_the_background_check_verifies_each_exposure_once(tmp_path: Path) -> None:
+    calls: list = []
+    st = _analyst(tmp_path, verify_fn=_fake_verify(calls), allowed_domains=("example.edu",))
+    assert st.alerts.verify_pending() == 1, "two alerts, one exposure key"
+    assert calls == [("www.example.edu", "/.git/", "vcs", ("example.edu",))]
+    assert st.alerts.verify_pending() == 0, "already checked"
+    row = st.alerts.list("incidents")["rows"][0]
+    assert row["verification"]["verdict"] == "not_reproducible"
+
+
+def test_without_verify_domains_the_real_check_refuses_offline(tmp_path: Path) -> None:
+    st = _analyst(tmp_path)          # real verify(), empty allow-list: no network
+    st.alerts.verify_pending()
+    rec = st.alerts.list("incidents")["rows"][0]["verification"]
+    assert rec["verdict"] == "refused"
+
+
+@pytest.fixture()
+def analyst_server(tmp_path: Path):
+    made = {}
+
+    def start(calls, **kw):
+        st = _analyst(tmp_path, verify_fn=_fake_verify(calls),
+                      allowed_domains=("example.edu",))
+        httpd = build_server(st, host="127.0.0.1", port=0, **kw)
+        serve_in_thread(httpd)
+        made["httpd"] = httpd
+        return f"http://127.0.0.1:{httpd.server_address[1]}", st
+
+    yield start
+    if "httpd" in made:
+        made["httpd"].shutdown()
+        made["httpd"].server_close()
+
+
+def test_alert_routes_serve_the_queue_and_detail(analyst_server) -> None:
+    base, _ = analyst_server([])
+    code, body = _get(base + "/api/alerts?category=incidents")
+    assert code == 200 and [r["id"] for r in body["rows"]] == ["exp-2", "exp-1"]
+    code, body = _get(base + "/api/alerts/exp-1")
+    assert code == 200 and body["summary"]["id"] == "exp-1"
+    try:
+        _get(base + "/api/alerts/missing")
+        raise AssertionError("expected 404")
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+
+
+def test_triage_and_verify_need_the_token(analyst_server) -> None:
+    calls: list = []
+    base, _ = analyst_server(calls, token="s3cret")
+    code, _ = _post(base + "/api/alerts/exp-1/triage", {"verdict": "true_positive"})
+    assert code == 401
+    code, _ = _post(base + "/api/alerts/exp-1/verify", {})
+    assert code == 401 and calls == []
+
+    code, row = _post(base + "/api/alerts/exp-1/triage",
+                      {"verdict": "true_positive", "status": "resolved"}, token="s3cret")
+    assert code == 200 and row["verdict"] == "true_positive"
+    code, _ = _post(base + "/api/alerts/exp-1/triage", {"verdict": "nah"}, token="s3cret")
+    assert code == 400
+
+    code, body = _post(base + "/api/alerts/exp-1/verify", {}, token="s3cret")
+    assert code == 200 and body["results"][0]["verdict"] == "not_reproducible"
+    code, body = _post(base + "/api/alerts/exp-1/verify", {}, token="s3cret")
+    assert body["results"][0]["rate_limited"] is True, "one check per minute per exposure"
+    assert len(calls) == 1
+
+
+def test_a_read_only_console_refuses_triage(analyst_server) -> None:
+    base, _ = analyst_server([], read_only=True)
+    code, _ = _post(base + "/api/alerts/exp-1/triage", {"verdict": "benign"})
+    assert code == 403
