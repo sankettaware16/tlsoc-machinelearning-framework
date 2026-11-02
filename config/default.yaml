@@ -112,6 +112,29 @@ usecases:
   app_abuse:           { enabled: false }   # UC-15
 
 # --------------------------------------------------------------------------- #
+# Sensitive-file exposure (web_recon, D-040) — policy only.
+#   verify_domains: the console verifies an exposure by fetching it once, and
+#                   only from sites under these suffixes (the site name comes
+#                   from the client's Host header, so never leave this open).
+#   allow:          exposures a site serves on purpose, as "site|root"
+#                   patterns ("*" wildcards), e.g. "www.example.edu|/backup.zip".
+# --------------------------------------------------------------------------- #
+exposure:
+  verify_domains: []        # e.g. ["example.edu"]
+  allow: []
+
+# --------------------------------------------------------------------------- #
+# SIEM delivery (`soc-ml ship`, a separate process). The API key file holds an
+# Elasticsearch API key (encoded form) and must be mode 600.
+# --------------------------------------------------------------------------- #
+siem: {}
+  # url: "https://127.0.0.1:9200"
+  # api_key_file: "~/.config/soc-ml/siem.key"
+  # index: "tlsoc-ml-alerts"
+  # verify_tls: false
+  # kibana_url: "https://127.0.0.1:5601"
+
+# --------------------------------------------------------------------------- #
 # Analytics (AU-nn) — insights, not alerts. Runs as a separate process so a slow
 # analytics job can never delay a security alert (NFR-13).
 # --------------------------------------------------------------------------- #

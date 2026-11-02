@@ -206,7 +206,14 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       budget only through the cap (web_recon ~3,000 new addresses/day).
       Progressive alerting (D-033) replayed to 3.9 queued/day; **measured live
       by M-001 (23-29 Oct): H1 FAIL**, queued 32/2/8/35/63/43/2 — botnets and
-      stale-served-ness escalations. Next: M-002 (campaign folding)
+      stale-served-ness escalations. M-002 (campaign folding) voided before
+      its window for the exposure alerts below
+- [ ] **First production use case — sensitive-file exposure alerts (D-040).**
+      Deployed 2026-11-02. Offline on 29 Oct - 2 Nov: 7 exposures (1.6/day),
+      6 confirmed by content. Acceptance run M-003, 3-10 Nov
+      (docs/measurements/M-003-exposure-alerts-7d.md); analyst console with
+      verification and triage; SIEM shipper (`soc-ml ship`) waiting for its
+      Elasticsearch API key
 - [ ] bot_detection retrain is blocked until its label/features can represent
       a headless browser (D-032)
 
@@ -235,18 +242,15 @@ Open, in order:
       regression set, re-check
 - [x] One `ruff check --fix` (68 → 23 findings); adversarial review of the
       day's changes — 17 confirmed defects fixed (D-037)
-- [ ] Campaign folding (D-039): merged 2026-11-02 after M-001's verdict;
-      replayed on M-001's window 3/2/3/7/7/16/2. M-002 pre-registered
-      (docs/measurements/M-002-campaign-folding-7d.md); **deploy on prod
-      before 2026-11-02 23:00 IST** for the window to open 3 Nov
-- [ ] Learn served-ness live: 17 of M-001's 22 finding escalations were
-      services added after the 12 Oct bundle (Anubis, ONLYOFFICE), each
-      escalating at critical outside the budget. Build after M-002, or before
-      its window opens — not during it
+- [x] Campaign folding (D-039): merged and deployed 2026-11-02; M-002 voided
+      the same day for D-040
+- [x] ~~Learn served-ness live~~: superseded by D-040 — escalation now needs
+      a sensitive kind, so a new legitimate service no longer escalates
 - [ ] bot_detection retrain on current traffic: the 7 Oct bundle scores the
       Alibaba Cloud crawler (~60% of the feed since 23 Oct) as browsers; the
       D-036 candidate catches it but puts 18.5% of all windows over a 0.5%
-      gate. A promotion voids M-002 (the crawler export feeds web_recon)
+      gate. Runs in shadow from 2026-11-02 (delivers nothing) until retrained;
+      its crawler export still feeds web_recon
 - [ ] `check_candidate --seeds`: judge on the worst seed (P2)
 - [ ] Synthetic-attack harness through the real engine, detection always
       reported beside its false-alarm rate (P2)

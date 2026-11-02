@@ -10,6 +10,62 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-11-02 — The alert an analyst can act on: sensitive-file exposure
+
+### D-040 · Escalate sensitive kinds, not unseen file types; alert exposures whether or not the models fire
+
+**Context.** Three months in, nothing delivered could be called a working use
+case. Of web_recon's 114 delivered alerts (8 Oct - 2 Nov), 39 were critical
+"findings" (a success on a file type unseen at training, D-034); 30 of those
+were legitimate services that went live after the 12 Oct snapshot (Anubis
+challenge pages, an office-suite editor, a VPN host checker, web fonts, a
+WordPress asset URL). The other 75 were scanners that got nothing but 404s,
+and bot_detection's 42 were almost all one crawler botnet. Novelty of a file
+type says nothing about its sensitivity.
+
+**Decision.**
+1. *What is escalated:* a 2xx with a body to a path of a **sensitive kind** —
+   repository (`.git/.svn/.hg`), secrets (`.env`, keys, credential files,
+   config backups), database dump, site/source backup, server-side source
+   copy, debug/status/log output, web-server config. Development metadata
+   (`.DS_Store`, lock files) is recorded only. Kinds live in
+   `features/exposure.py` with what an attacker gains and the response steps,
+   so the alert can say both.
+2. *Catch-all pages:* a response whose size the same site returned for two or
+   more other paths is its answer to everything (learned live, per site,
+   from all clients). Prod 29 Oct - 2 Nov: 4,239 sensitive-looking successes,
+   4,227 of them catch-all answers, **7 exposures** left.
+3. *Independent of the gate:* an exposure is alerted whether or not the models
+   fire. One targeted request never reaches the evidence floor (5 events,
+   3 paths); of the 7, three came from windows the models did not flag. The
+   models' view stays on the alert as context ("its traffic also looked like a
+   scan" / "did not").
+4. *One alert per exposure:* keyed by (site, root) — every object of one
+   `.git` is one exposure; later downloaders fold into the first alert and are
+   all logged (`<uc>_exposures.ndjson`). Re-raised if still downloaded 7 days
+   after the last alert. Not capped by the daily budget.
+5. *Severity is the kind's,* not the model's: a scanner that trips the models
+   while fetching a stock `web.config` exposed a config file (medium), not a
+   critical incident. Scans that exposed nothing are delivered at low, in
+   their own category, so the incident queue and SIEM rules key on exposures.
+6. *Verification:* the console fetches each new exposure once (2 KB, no
+   redirects, only sites under `exposure.verify_domains` — the Host header is
+   the client's) and checks the content signature; only the verdict, the
+   signature name and a digest are kept. On the 7: 6 confirmed (three sites
+   serving `web.config`/`.htaccess`, one serving Apache `/server-status`),
+   1 not reproducible (a `/search/.env` answered by a search page).
+
+**Rules out.** The broad never-served-type escalation; letting model score set
+an exposure's severity; per-downloader alerts; verifying arbitrary hosts.
+
+**Lives in.** `src/soc_ml/features/exposure.py`, `features/window_features.py`
+(`_note_exposure`, `_confirmed_exposures`), `detection/scorer.py`
+(`exposure_alert`, `_make_exposure`), `detection/runtime.py`
+(`_deliver_exposure`), `alerting/file_sink.py` (ECS document),
+`alerting/siem.py`, `web/alerts.py`; tests in `tests/test_exposure.py`.
+
+---
+
 ## 2026-10-27 — One botnet, thirty alerts: campaign folding
 
 ### D-039 · Fold one user-agent's co-arriving addresses into one alert

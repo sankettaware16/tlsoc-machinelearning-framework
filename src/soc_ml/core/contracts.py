@@ -139,6 +139,10 @@ class Event:
     geo_city: str | None = None
     geo_lat: float | None = None
     geo_lon: float | None = None
+    #: The network the address belongs to (ECS ``source.as``) — who to contact
+    #: or block. Evidence for the analyst, never a model input.
+    source_asn: int | None = None
+    source_as_org: str | None = None
 
     http_method: str | None = None
     http_referrer: str | None = None  # literally "-" when absent, not null
@@ -147,6 +151,9 @@ class Event:
 
     url_path: str | None = None
     url_query: str | None = None
+    #: The site that answered (ECS ``url.domain``, from the Host header). One
+    #: observer fronts many sites; an exposure belongs to one of them.
+    url_domain: str | None = None
 
     user_agent: str | None = None
 
@@ -223,6 +230,7 @@ class Event:
         body = resp.get("body") or {}
         url = doc.get("url") or {}
         evt = doc.get("event") or {}
+        asn = src.get("as") or {}
 
         referrer = req.get("referrer")
         if referrer == "-":
@@ -244,12 +252,15 @@ class Event:
             geo_city=geo.get("city_name"),
             geo_lat=loc.get("lat"),
             geo_lon=loc.get("lon"),
+            source_asn=asn.get("number"),
+            source_as_org=(asn.get("organization") or {}).get("name"),
             http_method=req.get("method"),
             http_referrer=referrer,
             status_code=resp.get("status_code"),
             body_bytes=body.get("bytes"),
             url_path=url.get("path"),
             url_query=url.get("query"),
+            url_domain=url.get("domain"),
             user_agent=(doc.get("user_agent") or {}).get("original"),
             event_category=evt.get("category"),
             event_type=evt.get("type"),

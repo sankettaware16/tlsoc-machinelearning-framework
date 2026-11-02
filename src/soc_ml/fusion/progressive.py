@@ -139,9 +139,10 @@ class Progression:
             episode.window_found = False
 
         stage, ceiling = _stage(episode.windows)
-        # A scan that got a never-served file type back is not a weak signal,
-        # however short: no ceiling, straight to the queue (D-034).
-        found = bool(alert.links.get("findings"))
+        # A scan that got a sensitive file back is not a weak signal, however
+        # short: no ceiling, straight to the queue (D-034, narrowed by D-040 to
+        # the sensitive kinds — a never-served *type* alone is no longer one).
+        found = bool(alert.links.get("exposures"))
         if found:
             stage, ceiling = Severity.from_score(alert.severity_score), 100
         if alert.severity_score > ceiling:

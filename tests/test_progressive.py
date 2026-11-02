@@ -133,7 +133,7 @@ def _sustained_scanner(ip: str, minutes: int, uas: int = 1) -> list[Event]:
     return events
 
 
-def _run(tmp_path: Path, attack: list[Event]) -> DetectionRuntime:
+def _run(tmp_path: Path, attack: list[Event], **config) -> DetectionRuntime:
     bundle = train_bundle(WebRecon, usecase_model_factories(WebRecon),
                           lambda: iter(_benign()), source_desc="benign only")
     registry = ModelRegistry(tmp_path)
@@ -143,7 +143,8 @@ def _run(tmp_path: Path, attack: list[Event]) -> DetectionRuntime:
     incoming.mkdir()
     _write_events(incoming / "logs.json", sorted(_benign() + attack, key=lambda e: e.timestamp))
     rt = DetectionRuntime(RuntimeConfig(input_dir=incoming, data_dir=tmp_path,
-                                        mode="live", follow=False), log=lambda *_: None)
+                                        mode="live", follow=False, **config),
+                          log=lambda *_: None)
     assert rt.run() == 0
     return rt
 
@@ -168,7 +169,10 @@ def test_a_sustained_scanner_reaches_the_queue_once(tmp_path: Path) -> None:
                          for r in after)
 
     alert_doc = _rows(tmp_path / "alerts" / "web_recon.ndjson")[0]
-    assert alert_doc["alert"]["severity"] == "high", "one detector alone never claims critical"
+    assert alert_doc["alert"]["severity"] == "low", "a scan that exposed nothing is information"
+    assert alert_doc["alert"]["category"] == "scanner"
+    assert alert_doc["links"]["severity_before_ceiling"] == "high", (
+        "one detector alone never claims critical")
     assert alert_doc["links"]["progressive"]["stage"] == "high"
     assert "Sustained" in alert_doc["explanation"]["narrative"]
     digest = _rows(tmp_path / "state" / "web_recon_digest.ndjson")
@@ -201,7 +205,7 @@ def test_a_lone_burst_stays_a_visible_candidate(tmp_path: Path) -> None:
 
 
 def _with_finding(a):
-    a.links["findings"] = [{"path": "/.git/config", "status": 200, "bytes": 311}]
+    a.links["exposures"] = [{"key": "web01|/.git/", "kind": "vcs"}]
     return a
 
 
@@ -244,8 +248,8 @@ def test_a_finding_bypasses_the_daily_cap(tmp_path: Path) -> None:
     rt = _run_with_budget(tmp_path, _burst(found=True), budget=0)
     rows = [r for r in _rows(tmp_path / "state" / "web_recon_scores.ndjson")
             if "203.0.113.60" in r["entity"]]
-    assert rows[0]["disposition"] == "delivered" and rows[0]["budget"] == "bypassed: finding"
-    assert rows[0]["findings"] == 1
+    assert rows[0]["disposition"] == "delivered" and rows[0]["budget"] == "bypassed: exposure"
+    assert rows[0]["exposures"] == ["_|/backup.sql"]
     _ = (DetectionRuntime, RuntimeConfig, rt)
 
 

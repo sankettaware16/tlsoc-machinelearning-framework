@@ -114,13 +114,13 @@ def test_a_rotating_scanner_cannot_split_the_finding_away() -> None:
 def test_a_finding_is_queued_at_once_without_a_ceiling() -> None:
     p = Progression()
     a = _fire(score=100)
-    a.links["findings"] = [{"path": "/web.config", "status": 200, "bytes": 4039}]
+    a.links["exposures"] = [{"key": "web01|/web.config", "kind": "server_config"}]
     step = p.decide(a)
     assert step.action == "deliver" and step.escalated
     assert a.severity is Severity.CRITICAL and a.severity_score == 100
     assert a.links["progressive"]["escalated_by"] == "finding"
     again = _fire(minutes=5, score=100)
-    again.links["findings"] = a.links["findings"]
+    again.links["exposures"] = a.links["exposures"]
     assert p.decide(again).action == "fold", "once per address per day still holds"
 
 
@@ -131,7 +131,8 @@ def _burst(found: bool) -> list[Event]:
     events = [_ev(f"/secret/dump_{i}.php", 404, ip="203.0.113.60", seconds=2 * i)
               for i in range(40)]
     if found:
-        events.append(_ev("/backup.sql", 200, ip="203.0.113.60", seconds=81))
+        # Its own size: a size the benign pages share would be the catch-all page.
+        events.append(_ev("/backup.sql", 200, ip="203.0.113.60", seconds=81, size=91_234))
     return events
 
 
@@ -139,12 +140,14 @@ def test_a_one_burst_scan_that_finds_something_reaches_the_queue(tmp_path: Path)
     rt = _run(tmp_path, _burst(found=True))
     assert rt.stats["alerts_delivered"] == 1
     doc = _rows(tmp_path / "alerts" / "web_recon.ndjson")[0]
-    assert doc["alert"]["severity"] == "critical"
-    assert doc["links"]["findings"][0]["path"] == "/backup.sql"
-    assert "never serves: /backup.sql (200" in doc["explanation"]["narrative"]
+    assert doc["alert"]["severity"] == "critical" and doc["alert"]["category"] == "exposure"
+    assert doc["exposure"][0]["root"] == "/backup.sql" and doc["exposure"][0]["kind"] == "dump"
+    assert "203.0.113.60 (ZZ" not in doc["explanation"]["narrative"]
+    assert "downloaded 1 file (91,234 bytes, HTTP 200) of database dump" in (
+        doc["explanation"]["narrative"])
     rows = [r for r in _rows(tmp_path / "state" / "web_recon_scores.ndjson")
             if "203.0.113.60" in r["entity"]]
-    assert rows[0]["escalated_by"] == "finding"
+    assert rows[0]["escalated_by"] == "exposure"
 
 
 def test_the_same_burst_finding_nothing_stays_a_candidate(tmp_path: Path) -> None:
@@ -157,7 +160,8 @@ def test_the_narrative_names_what_was_found() -> None:
     text = narrative("T", "1.2.3.4", "web01", {
         "event_count": 9, "distinct_paths": 9, "n404": 8,
         "source_findings": [{"path": "/web.config", "status": 200, "bytes": 4039}]}, [])
-    assert "a file type this site never serves: /web.config (200, 4,039 bytes)." in text
+    assert "not seen served here during training (context, not by itself an " \
+        "exposure): /web.config (200, 4,039 bytes)." in text
 
 
 def test_a_path_scanners_always_probe_is_still_a_finding_the_day_it_succeeds() -> None:
@@ -225,7 +229,7 @@ def test_a_finding_overrides_crawler_suppression() -> None:
     ann = {"crawler.is_verified": True, "crawler.robots_txt": True,
            "crawler.human_likeness": 0.1, "source": "bot_detection"}
     found = make_alert()
-    found.links["findings"] = [{"path": "/.env", "status": 200, "bytes": 913}]
+    found.links["exposures"] = [{"key": "web01|/.env", "kind": "secrets"}]
     out = SimpleNamespace(evidence={"entity_annotations": ann}, alert=found)
     scorer._apply_suppression(out)
     assert found.delivered and found.suppressed_by is None

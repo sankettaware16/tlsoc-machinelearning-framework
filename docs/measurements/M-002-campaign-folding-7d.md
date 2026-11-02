@@ -93,6 +93,16 @@ informational: fires per day; queued per day split into finding escalations
   bundles. No watchdog line was written. The build is running more than an hour
   before 2026-11-03 00:00 IST, so the window opens then.
 
+- **2026-11-02 (evening IST), before the window opened: M-002 is voided.**
+  The window was to open at 2026-11-03 00:00 IST. The exposure alerts (D-040)
+  change web_recon's delivery and are deployed before or during the window,
+  which voids it by its own rule. The reasons it is stopped rather than run
+  first: its outcome is already predicted (the replay queues 3 / 2 / 3 / 7 /
+  7 / 16 / 2 on M-001's traffic, H1 fails), and what it measures, the volume
+  of sustained-scanner alerts, is no longer what the deployment pages on.
+  Campaign folding stays deployed. The next measurement is M-003: the
+  exposure alerts' precision as judged by analysts, 7 days.
+
 ## Verdict
 
-*(appended after the window closes)*
+**Void** (see the last event above). No hypothesis was evaluated.
