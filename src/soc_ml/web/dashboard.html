@@ -731,7 +731,7 @@ function triageBadge(t){
 }
 
 const CATS = [["incidents", "Incidents"], ["scanner", "Scanner activity"],
-              ["bot", "Bots"], ["all", "All"]];
+              ["bot", "Bots"], ["legacy", "Before 2 Nov (old rule)"], ["all", "All"]];
 const CAT_NAME = {exposure: "Incidents (exposures)", scanner: "Scanner activity", bot: "Bots"};
 let CAT = "incidents";
 
@@ -750,7 +750,7 @@ function renderTally(tally){
         h("div", null, h("b", null, nf(t.untriaged)), h("div", {class: "who"}, "untriaged"))),
       h("div", {class: "note"}, t.precision === null
         ? `${nf(t.total)} delivered · no verdicts yet`
-        : `precision ${(100 * t.precision).toFixed(0)}% (true ÷ true+false) · ${nf(t.total)} delivered`)));
+        : `correct ${(100 * t.precision).toFixed(0)}% ((true+benign) ÷ judged) · ${nf(t.total)} delivered`)));
   }
 }
 

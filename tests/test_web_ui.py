@@ -414,7 +414,7 @@ def test_the_queue_joins_verification_and_triage(tmp_path: Path) -> None:
 def test_a_pre_schema_alert_still_renders(tmp_path: Path) -> None:
     st = _analyst(tmp_path)
     old = next(r for r in st.alerts.list("all")["rows"] if r["id"] == "1")
-    assert old["category"] == "scanner" and old["ip"] == "10.0.0.9"
+    assert old["category"] == "legacy" and old["ip"] == "10.0.0.9"
     assert old["title"].startswith("Scanner — 10.0.0.9")
     detail = st.alerts.detail("1")
     assert detail["exposures"] == [] and detail["other_clients"] == []

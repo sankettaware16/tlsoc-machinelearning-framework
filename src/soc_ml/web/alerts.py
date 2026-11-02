@@ -176,7 +176,10 @@ class AlertBook:
             return "bot" if cat == "bot_detection" else str(cat)
         if doc.get("exposure"):
             return "exposure"
-        return "bot" if doc.get("usecase") == "bot_detection" else "scanner"
+        # Written before alerts carried a category (D-040, 2026-11-02): their
+        # "findings" were judged by a rule since replaced, so they are shown
+        # apart and kept out of the triage tally that M-003 reads.
+        return "legacy"
 
     @staticmethod
     def _site(doc: dict) -> str | None:
@@ -249,10 +252,14 @@ class AlertBook:
             verdict = (r["triage"] or {}).get("verdict")
             t[verdict if verdict in VERDICTS else "untriaged"] += 1
         for t in tally.values():
-            judged = t["true_positive"] + t["false_positive"]
-            t["precision"] = round(t["true_positive"] / judged, 3) if judged else None
+            # M-003's "correct": benign (real but authorised) means the
+            # detection was right.
+            right = t["true_positive"] + t["benign"]
+            judged = right + t["false_positive"]
+            t["precision"] = round(right / judged, 3) if judged else None
         want = {"incidents": "exposure", "exposure": "exposure", "scanner": "scanner",
-                "scanners": "scanner", "bot": "bot", "bots": "bot"}.get(category)
+                "scanners": "scanner", "bot": "bot", "bots": "bot",
+                "legacy": "legacy"}.get(category)
         if want:
             rows = [r for r in rows if r["category"] == want]
         return {"rows": rows[: max(1, min(int(limit), 1000))], "total": len(rows),
