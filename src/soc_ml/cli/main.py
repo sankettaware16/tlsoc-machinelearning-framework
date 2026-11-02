@@ -572,6 +572,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         daily_alert_budget=args.daily_budget,
         modes=modes,
         timezone_name=tz_name,
+        exposure_allow=tuple(((cfg.raw.get("exposure") or {}).get("allow") or ())
+                             if cfg is not None else ()),
     )
     try:
         # Timestamped lines: a traceback in runtime.log can then be placed in
@@ -661,6 +663,41 @@ def cmd_ui(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_ship(args: argparse.Namespace) -> int:
+    """Ship alerts, verifications, triage and exposure downloads to the SIEM."""
+    from soc_ml.alerting.siem import SiemShipper
+    from soc_ml.core import load_config
+
+    try:
+        siem = (load_config(args.config).raw.get("siem") or {})
+    except Exception as exc:
+        print(f"[ERROR] cannot read config {args.config}: {exc}", file=sys.stderr)
+        return 2
+    url, key_file = siem.get("url"), siem.get("api_key_file")
+    if not url or not key_file:
+        print("[ERROR] config needs siem.url and siem.api_key_file", file=sys.stderr)
+        return 2
+    key_path = Path(key_file).expanduser()
+    try:
+        if key_path.stat().st_mode & 0o077:
+            print(f"[ERROR] {key_path} is readable by others; chmod 600 it", file=sys.stderr)
+            return 2
+        api_key = key_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(f"[ERROR] cannot read the API key: {exc}", file=sys.stderr)
+        return 2
+
+    def stamped(message: str) -> None:
+        from datetime import UTC, datetime
+        print(f"{datetime.now(UTC).isoformat(timespec='seconds')} {message}", flush=True)
+
+    shipper = SiemShipper(args.out, url=url, api_key=api_key,
+                          index=siem.get("index", "tlsoc-ml-alerts"),
+                          verify_tls=bool(siem.get("verify_tls", True)), log=stamped)
+    stamped(f"[siem] shipping {args.out} to {url} index {shipper.index}")
+    return shipper.run(every_s=float(siem.get("every_s", 10)), once=args.once)
+
+
 def cmd_not_implemented(args: argparse.Namespace) -> int:
     print(f"[ERROR] '{args.command}' {_NOT_YET}", file=sys.stderr)
     return 3
@@ -674,7 +711,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="soc-ml",
         description="Self-learning behavioral analytics for web traffic.",
     )
-    p.add_argument("--config", default="config/default.yaml", help="config file")
+    p.add_argument("--config", default=os.environ.get("SOC_ML_CONFIG", "config/default.yaml"),
+                   help="config file (default: $SOC_ML_CONFIG or config/default.yaml)")
     sub = p.add_subparsers(dest="command", required=True)
 
     v = sub.add_parser("validate", help="check input against the event contract")
@@ -783,6 +821,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="permit a non-loopback bind without TLS (accepts the risk)")
     ui.add_argument("--verbose", action="store_true", help="log every request")
     ui.set_defaults(func=cmd_ui)
+
+    sh = sub.add_parser("ship", help="ship alerts and analyst verdicts to the SIEM")
+    sh.add_argument("--out", default="data", help="data root whose alerts to ship")
+    sh.add_argument("--once", action="store_true", help="ship what exists, then exit")
+    sh.set_defaults(func=cmd_ship)
 
     sub.add_parser("version", help="show version").set_defaults(
         func=lambda a: (print(_version()), 0)[1]
