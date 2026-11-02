@@ -204,8 +204,9 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
 - [x] 8 days unattended, 0 restarts, 0 parse failures, reboot-proven (D-030)
 - [ ] Decision gate: combined *organic* rate within budget. Measured: within
       budget only through the cap (web_recon ~3,000 new addresses/day).
-      Progressive alerting (D-033) replays to 3.9 queued/day — **re-measure
-      on prod for 7 days with it deployed, then decide**
+      Progressive alerting (D-033) replayed to 3.9 queued/day; **measured live
+      by M-001 (23-29 Oct): H1 FAIL**, queued 32/2/8/35/63/43/2 — botnets and
+      stale-served-ness escalations. Next: M-002 (campaign folding)
 - [ ] bot_detection retrain is blocked until its label/features can represent
       a headless browser (D-032)
 
@@ -234,9 +235,18 @@ Open, in order:
       regression set, re-check
 - [x] One `ruff check --fix` (68 → 23 findings); adversarial review of the
       day's changes — 17 confirmed defects fixed (D-037)
-- [ ] Campaign folding (D-039): built and replay-measured on branch
-      `campaign-folding` (23-27 Oct queued 32/2/8/35/33 → 3/2/3/7/6); merge
-      and deploy after M-001 closes (2026-10-30), then pre-register M-002
+- [ ] Campaign folding (D-039): merged 2026-11-02 after M-001's verdict;
+      replayed on M-001's window 3/2/3/7/7/16/2. M-002 pre-registered
+      (docs/measurements/M-002-campaign-folding-7d.md); **deploy on prod
+      before 2026-11-02 23:00 IST** for the window to open 3 Nov
+- [ ] Learn served-ness live: 17 of M-001's 22 finding escalations were
+      services added after the 12 Oct bundle (Anubis, ONLYOFFICE), each
+      escalating at critical outside the budget. Build after M-002, or before
+      its window opens — not during it
+- [ ] bot_detection retrain on current traffic: the 7 Oct bundle scores the
+      Alibaba Cloud crawler (~60% of the feed since 23 Oct) as browsers; the
+      D-036 candidate catches it but puts 18.5% of all windows over a 0.5%
+      gate. A promotion voids M-002 (the crawler export feeds web_recon)
 - [ ] `check_candidate --seeds`: judge on the worst seed (P2)
 - [ ] Synthetic-attack harness through the real engine, detection always
       reported beside its false-alarm rate (P2)
