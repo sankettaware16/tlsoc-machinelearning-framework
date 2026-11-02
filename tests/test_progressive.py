@@ -133,7 +133,7 @@ def _sustained_scanner(ip: str, minutes: int, uas: int = 1) -> list[Event]:
     return events
 
 
-def _run(tmp_path: Path, attack: list[Event]) -> DetectionRuntime:
+def _run(tmp_path: Path, attack: list[Event], **config) -> DetectionRuntime:
     bundle = train_bundle(WebRecon, usecase_model_factories(WebRecon),
                           lambda: iter(_benign()), source_desc="benign only")
     registry = ModelRegistry(tmp_path)
@@ -143,7 +143,8 @@ def _run(tmp_path: Path, attack: list[Event]) -> DetectionRuntime:
     incoming.mkdir()
     _write_events(incoming / "logs.json", sorted(_benign() + attack, key=lambda e: e.timestamp))
     rt = DetectionRuntime(RuntimeConfig(input_dir=incoming, data_dir=tmp_path,
-                                        mode="live", follow=False), log=lambda *_: None)
+                                        mode="live", follow=False, **config),
+                          log=lambda *_: None)
     assert rt.run() == 0
     return rt
 

@@ -140,7 +140,10 @@ def _write_events(path: Path, events: list[Event]) -> None:
                 "@timestamp": e.timestamp.isoformat(),
                 "observer": {"server": e.observer.server},
                 "source": {"ip": e.source_ip,
-                           **({"geo": {"country_iso_code": "US"}} if not e.is_internal else {})},
+                           **({"geo": {"country_iso_code": "US"}} if not e.is_internal else {}),
+                           **({"as": {"number": e.source_asn,
+                                      "organization": {"name": e.source_as_org}}}
+                              if e.source_asn else {})},
                 "http": {"request": {"method": "GET",
                                      **({"referrer": e.http_referrer} if e.http_referrer else {})},
                          "response": {"status_code": e.status_code,
