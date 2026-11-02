@@ -87,6 +87,12 @@ informational: fires per day; queued per day split into finding escalations
 
 *Recorded as they happen, before the window closes.*
 
+- **2026-11-02 13:22 IST, before the window: build c18e149 deployed.** Clean
+  SIGTERM drain (3 s), started with the launch command 7 s later, resumed from
+  the checkpoint (episodes and queue carried over, campaigns empty), same
+  bundles. No watchdog line was written. The build is running more than an hour
+  before 2026-11-03 00:00 IST, so the window opens then.
+
 ## Verdict
 
 *(appended after the window closes)*
