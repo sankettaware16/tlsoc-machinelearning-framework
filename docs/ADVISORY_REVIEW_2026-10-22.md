@@ -1,4 +1,4 @@
-# Advisory review — foss-soc-ml at `cbf1e34` (2026-10-22)
+# Advisory review — foss-soc-ml at `b7953a3` (2026-10-22)
 
 *An outside read of the whole repository — every document, the journal D-001..D-033, all 82 source
 files, the scripts and the tests — by someone who has spent the last weeks measuring the same
@@ -8,7 +8,7 @@ I cite the measurement, not the project. Nothing below is a verdict on the team'
 list a senior engineer would leave on the table after a visit.*
 
 Basis: `tests/` — **213 passed, 20 skipped** (the real-data tests, absent on this machine);
-`ruff check src tests scripts` — **74 findings, 44 auto-fixable**; working tree clean at `cbf1e34`.
+`ruff check src tests scripts` — **74 findings, 44 auto-fixable**; working tree clean at `b7953a3`.
 
 ---
 

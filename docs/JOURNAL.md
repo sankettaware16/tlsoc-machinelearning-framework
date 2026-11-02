@@ -61,7 +61,7 @@ the runtime runs its tick from it (health, checkpoint, flush; drift skips an
 empty sample). Health and the checkpoint carry `last_event_at`; the console
 shows **LIVE · NO INPUT** when health is fresh but nothing was read for
 2 minutes. STOPPED now means only that health stopped. Deployed 2026-10-26
-(d874e29); an operator restart inside M-001's window, recorded there.
+(4c3ed5b); an operator restart inside M-001's window, recorded there.
 
 **Lives in.** `ingest/file.py`, `detection/runtime.py`, `web/state.py`,
 `web/dashboard.html`.
@@ -76,7 +76,7 @@ shows **LIVE · NO INPUT** when health is fresh but nothing was read for
 promotion gate, local days, per-use-case modes, an hour-wide drift sample
 (D-035), and bot_detection's address rhythm (D-036) — most of it deployed
 mid-measurement. Before trusting it, five independent reviewers (delivery,
-state, features, measurement, gate integrity) read the diff `cbf1e34..` and
+state, features, measurement, gate integrity) read the diff `b7953a3..` and
 reported defects; every report went to two skeptics with different lenses
 (code truth; reproduction and impact) told to refute it. 22 reports → **17
 upheld by both, 1 split, 4 refuted**, most reproduced with scratch scripts.
@@ -114,7 +114,7 @@ against the previous code and fails there.
 **Rules out.** Shipping a measurement or a gate without first asking how it
 could fail; reading a passing test as evidence without checking it can fail.
 
-**Lives in.** commits `f98742e`, `475c2f6`; `tests/test_{progressive,findings,
+**Lives in.** commits `ad0bd4e`, `1c96023`; `tests/test_{progressive,findings,
 registry,address_rhythm,approval_gate,measure_m001}.py`.
 
 ### D-036 · bot_detection: address rhythm memory and a label-free rhythm model
@@ -189,7 +189,7 @@ label cannot.
 ### D-035 · Promotion needs a recorded verdict; measurements are ruled before they run
 
 **Context.** A researcher measuring the same mechanisms on the same campus feed
-reviewed the repository at `cbf1e34` (`docs/ADVISORY_REVIEW_2026-10-22.md`).
+reviewed the repository at `b7953a3` (`docs/ADVISORY_REVIEW_2026-10-22.md`).
 Its summary: the operational hardening is real; the *evidence layer* is thin —
 promotion is a button with no recorded verdict behind it, measurements are
 judged after the numbers exist, comparisons rest on one seed. D-032's blind

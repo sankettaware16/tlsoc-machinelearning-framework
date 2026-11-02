@@ -14,7 +14,7 @@ question: >
 follows: M-001 (verdict 2026-11-02)
 deployment: prod (10.0.0.11), use cases bot_detection,web_recon, --mode live,
   --daily-budget 3, local day Asia/Kolkata
-code: main at or after d030fc9 (merge of campaign-folding), the commit recorded
+code: main at or after 1b9cda3 (merge of campaign-folding), the commit recorded
   in the verdict; web_recon bundle v20261012T132802, bot_detection
   v20261007T162845 (both unchanged from M-001)
 window:

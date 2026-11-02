@@ -86,7 +86,7 @@ unchanged; these are facts for whoever writes the verdict.*
   feed stopped upstream of Kafka. The runtime stayed up and resumed on its own.
   Fires for 23 Oct are therefore a lower bound; H1 is one-sided, so this can
   only help it, and the day still has score rows.
-- **2026-10-26 00:14 IST: operator restart for a deploy (commit d874e29).**
+- **2026-10-26 00:14 IST: operator restart for a deploy (commit 4c3ed5b).**
   The change touches health, checkpoint and dashboard only (idle-feed health,
   `last_event_at`); web_recon's scoring, features and delivery are unchanged,
   so the window is not void. The runtime was stopped by SIGTERM at 00:14:21
@@ -105,10 +105,12 @@ unchanged; these are facts for whoever writes the verdict.*
 Measured 2026-11-02 on prod by `scripts/measure_m001.py --start
 2026-10-23T00:00:00+05:30 --end 2026-10-30T00:00:00+05:30`.
 
-**Code.** 475c2f6 (pulled and started 2026-10-22 22:20 IST) until 2026-10-26
-00:14 IST, then d874e29 (health, checkpoint and dashboard only; see above).
+**Code.** 1c96023 (pulled and started 2026-10-22 22:20 IST) until 2026-10-26
+00:14 IST, then 4c3ed5b (health, checkpoint and dashboard only; see above).
 web_recon served bundle v20261012T132802 throughout; bot_detection
-v20261007T162845.
+v20261007T162845. (Repository history was rewritten on 2026-11-02 to remove
+real host and address details; the deployment's reflog records the same two
+commits under their earlier hashes, 475c2f6 and d874e29.)
 
 | day (IST) | fires | queued | delivered |
 |---|---:|---:|---:|
