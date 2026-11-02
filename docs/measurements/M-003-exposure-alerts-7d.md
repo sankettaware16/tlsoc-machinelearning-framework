@@ -79,6 +79,20 @@ informational: exposure alerts per day by kind and severity; distinct
 
 *Recorded as they happen, before the window closes.*
 
+- **2026-11-02 18:51 IST, before the window: build 2e07445 deployed.** Clean
+  SIGTERM drain (3 s), started with the launch command and
+  `SOC_ML_CONFIG=config/site.local.yaml` (bot_detection shadow, web_recon
+  live, IST day, verify domains set), resumed from the checkpoint. The
+  exposure tracker starts empty, so the first download of an exposure that
+  the old rule had already alerted on is alerted once more. No watchdog line
+  was written.
+- **18:53 IST: console-only update (d277f91)** — alerts written before D-040 are
+  shown as "legacy" and kept out of the tally; the tally counts benign as
+  correct, as H1 does. Detection and delivery unchanged.
+- **SIEM shipper not running yet:** creating its Elasticsearch API key needs
+  the operator. Until the key exists, alerts reach the SIEM only through the
+  alert files; this does not affect H1-H4.
+
 ## Verdict
 
 *(appended after the window closes)*
