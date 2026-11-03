@@ -16,10 +16,14 @@ from email.message import Message
 from pathlib import Path
 
 from soc_ml.core.contracts import Event, Observer
+from soc_ml.core.plugins import usecase_model_factories
 from soc_ml.features.exposure import ExposureTracker, classify, verify
+from soc_ml.registry.store import ModelRegistry
+from soc_ml.training.trainer import train_bundle
+from soc_ml.usecases import BotDetection
 from tests.test_detection_lifecycle import T0
 from tests.test_findings import _evidence, _profile
-from tests.test_progressive import _rows, _run
+from tests.test_progressive import _benign, _rows, _run
 
 SITE = "club.example.edu"
 
@@ -136,6 +140,22 @@ def test_later_downloaders_fold_into_the_first_alert_and_are_all_recorded(
     assert len(alerts) == 1, "five scanners, one misconfiguration"
     rows = _rows(tmp_path / "state" / "web_recon_exposures.ndjson")
     assert len(rows) == 5 and {r["alert_id"] for r in rows} == {alerts[0]["alert"]["id"]}
+
+
+def test_an_exposure_is_alerted_by_one_use_case_only(tmp_path: Path) -> None:
+    """prod replay, 2 Nov: bot_detection queued the same web.config and
+    .htaccess web_recon did."""
+    bundle = train_bundle(BotDetection, usecase_model_factories(BotDetection),
+                          lambda: iter(_benign()), source_desc="benign only")
+    ModelRegistry(tmp_path).save_bundle(bundle)
+    ModelRegistry(tmp_path).promote("bot_detection", bundle.version)
+    rt = _run(tmp_path, [_ev("/.env", size=913)], usecases=("bot_detection", "web_recon"))
+    assert [r.slug for r in rt.runners] == ["bot_detection", "web_recon"]
+    assert len(_rows(tmp_path / "alerts" / "web_recon.ndjson")) == 1
+    bot = tmp_path / "alerts" / "bot_detection.ndjson"
+    assert not [d for d in (_rows(bot) if bot.exists() else [])
+                if d["alert"]["category"] == "exposure" or "exposure" in d]
+    assert not (tmp_path / "state" / "bot_detection_exposures.ndjson").exists()
 
 
 def test_an_allowed_exposure_is_not_alerted(tmp_path: Path) -> None:

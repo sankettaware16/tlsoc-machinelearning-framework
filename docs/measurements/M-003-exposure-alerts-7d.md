@@ -98,6 +98,15 @@ informational: exposure alerts per day by kind and severity; distinct
   (both `metadata`, recorded and not alerted). The key was created twice;
   at 11:48 the shipper was restarted by hand to load the second, and the
   first is to be invalidated. Shipper only: detection and delivery unchanged.
+  The operator invalidated the first key the same morning.
+- **2026-11-03, on main, not restarted into the runtime: exposure alerts
+  belong to web_recon only.** The full-pipeline replay of 2 Nov on prod
+  showed bot_detection, run live, queuing the same web.config and .htaccess
+  exposures as web_recon. On prod bot_detection is in shadow and delivers
+  nothing (no `bot_detection_exposures.ndjson` exists), so the running
+  build's web_recon output is unaffected; the change takes effect only for
+  a use case other than web_recon, and is required before bot_detection
+  goes live.
 
 ## Verdict
 

@@ -265,6 +265,10 @@ class UseCase(Plugin):
     #: The spec asks this of UC-02; detectors whose gate already demands
     #: persistence (UC-04: sustained 30 min) leave it off.
     progressive: ClassVar[bool] = False
+    #: Raise sensitive-file exposure alerts (D-040). Every use case's window
+    #: builder sees the same downloads; exactly one may alert on them, or each
+    #: exposure is queued once per use case.
+    owns_exposures: ClassVar[bool] = False
 
     @classmethod
     def canary(cls, server: str, start: datetime) -> list[Event]:

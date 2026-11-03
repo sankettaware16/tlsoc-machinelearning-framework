@@ -64,6 +64,8 @@ class WebRecon(UseCase):
     daily_alert_budget = 50
     #: Spec UC-02: first candidate low, upgraded as evidence accumulates (D-033).
     progressive = True
+    #: A downloaded .git/.env is what a scan is after (D-040).
+    owns_exposures = True
     #: bot_detection scores first each window so its crawler annotation
     #: exists by the time this gate's alert is considered for delivery.
     depends_on = ("bot_detection",)

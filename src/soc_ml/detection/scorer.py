@@ -146,6 +146,10 @@ class Scorer:
                 outputs.append(None)
                 continue
             entity_str = str(result.vector.entity)
+            if not self.usecase_cls.owns_exposures:
+                # Another use case alerts on these downloads; here they would
+                # queue every exposure a second time (prod replay, 2 Nov).
+                result.evidence.pop("exposures", None)
             if self.annotations is not None:
                 # What upstream use cases currently know about this entity
                 # (None is meaningful: "no signal" must stay distinguishable,
