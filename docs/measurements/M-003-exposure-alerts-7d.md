@@ -92,6 +92,12 @@ informational: exposure alerts per day by kind and severity; distinct
 - **SIEM shipper not running yet:** creating its Elasticsearch API key needs
   the operator. Until the key exists, alerts reach the SIEM only through the
   alert files; this does not affect H1-H4.
+- **2026-11-03 11:30 IST: SIEM shipper started** by the watchdog once the
+  operator created the key; it created `tlsoc-ml-alerts` and
+  `tlsoc-ml-alerts-downloads` and backfilled 157 alerts and 2 downloads
+  (both `metadata`, recorded and not alerted). The key was created twice;
+  at 11:48 the shipper was restarted by hand to load the second, and the
+  first is to be invalidated. Shipper only: detection and delivery unchanged.
 
 ## Verdict
 
