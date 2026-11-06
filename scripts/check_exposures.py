@@ -182,7 +182,9 @@ def main() -> int:
 
     if args.live:
         by_key, alerts = _live(Path(args.live))
-        in_window = {k: [r for r in rows if start <= datetime.fromisoformat(r["@timestamp"]) < end]
+        # Development metadata is recorded live but never alerted: not compared.
+        in_window = {k: [r for r in rows if start <= datetime.fromisoformat(r["@timestamp"]) < end
+                         and getattr(KINDS.get(r["kind"]), "alert", False)]
                      for k, rows in by_key.items()}
         live_keys = {k for k, rows in in_window.items() if rows}
         missing = [o for o in offline if o["key"] not in by_key]

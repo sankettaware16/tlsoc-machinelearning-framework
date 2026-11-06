@@ -20,7 +20,9 @@ Three things keep it from firing on what only looks like an exposure:
   same page (an SPA shell, a soft 404). A response whose size this site also
   returned for other paths is the site's answer to everything, not the file
   (on prod a ``/.git.tar.gz`` "success" was the 936-byte home page). The sizes
-  are learned live per site, in :class:`WindowFeatureBuilder`.
+  are learned live per site, in :class:`WindowFeatureBuilder`. A page that
+  prints the requested path changes size with the path's length; its
+  directory's other answers give it away (D-041).
 * **Empty bodies.** HEAD probes and 204s prove nothing about content.
 * **Verification.** :func:`verify` fetches the file once, from the SOC side,
   and checks the content against the kind's signature (a git config begins

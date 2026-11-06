@@ -111,6 +111,18 @@ def test_a_routed_parent_page_is_not_an_exposure() -> None:
     assert not [e for w in ev for e in w["exposures"]]
 
 
+def test_the_probes_count_though_the_directory_is_busy() -> None:
+    """prod, 6 Nov: two random probes of /division/ (17,313 bytes), then the
+    scanner crawled the directory's pages, then trace.axd (17,303)."""
+    probes = [_ev(f"/division/{n}", size=17_313, seconds=i)
+              for i, n in enumerate(("4425020930872022362", "6674209890008715192"))]
+    crawl = [_ev(f"/division/page-{i:02d}", ip="198.51.100.4", size=9_000 + 37 * i,
+                 seconds=2 + i * 0.1) for i in range(20)]
+    ev = _evidence(_profile(), probes + crawl + [_ev("/division/trace.axd", size=17_303,
+                                                     seconds=5)])
+    assert not [e for w in ev for e in w["exposures"]]
+
+
 def test_real_files_beside_pages_and_each_other_are_still_exposures() -> None:
     """Sizes that differ, or follow no common echo count, are files. Two
     copies of one .env (913 and 914 bytes) are both real."""

@@ -75,8 +75,11 @@ _MAX_ADDRESSES = 50_000  # address-memory LRU (persisted by the runtime, D-036)
 _MAX_SITES = 5_000  # sites whose response sizes are remembered (catch-all detection)
 _MAX_SITE_SIZES = 20_000  # distinct response sizes remembered per site
 _MAX_EXPOSURE_FILES = 20  # files listed per exposure (all are counted)
-_MAX_SITE_DIRS = 20_000  # (site, directory) pairs whose recent answers are kept
-_DIR_ANSWERS = 8  # recent 2xx (path, size) kept per directory
+_MAX_SITE_DIRS = 10_000  # (site, directory) pairs whose recent answers are kept
+#: Recent 2xx (path, size) kept per directory. Prod, 6 Nov: a scanner probed a
+#: directory with two random names, then crawled its twenty pages before the
+#: sensitive request; with 8 kept, the probes were gone.
+_DIR_ANSWERS = 32
 #: A page that repeats the requested path (canonical link, breadcrumb, form
 #: action...) grows by this many bytes per path character at most. Prod, 6 Nov:
 #: one site's soft-404 repeats it 5 times, another's routed page once.
@@ -185,7 +188,7 @@ class WindowFeatureBuilder:
         # (site, directory) -> its last few 2xx answers as (path, size). A page
         # that echoes the path changes size with the path's length, so the
         # exact-size rule misses it; its siblings show the pattern (D-041).
-        self._site_dirs: dict[tuple[str, str], list[tuple[str, int]]] = {}
+        self._site_dirs: dict[tuple[str, str], dict[str, int]] = {}
         # (server, ip) -> AddressMemory: rhythm across windows and user-agents.
         self._addresses: dict[tuple[str, str], AddressMemory] = {}
         # Addresses whose long-term history came from a snapshot taken *after*
@@ -368,18 +371,20 @@ class WindowFeatureBuilder:
             # The directory's answers so far ride along: by the time the
             # window closes a busy directory may have moved on.
             exp["files"][path] = (status, size, (event.original or "")[:2000],
-                                  list(siblings))
+                                  dict(siblings))
 
-    def _remember_dir(self, site: str, path: str, size: int) -> list[tuple[str, int]]:
+    def _remember_dir(self, site: str, path: str, size: int) -> dict[str, int]:
         key = (site, _parent(path))
         answers = self._site_dirs.pop(key, None)
         if answers is None:
             if len(self._site_dirs) >= _MAX_SITE_DIRS:
                 del self._site_dirs[next(iter(self._site_dirs))]
-            answers = []
+            answers = {}
         self._site_dirs[key] = answers  # most recently seen last
-        answers[:] = [a for a in answers if a[0] != path][-(_DIR_ANSWERS - 1):]
-        answers.append((path, size))
+        answers.pop(path, None)
+        answers[path] = size  # most recent last
+        if len(answers) > _DIR_ANSWERS:
+            del answers[next(iter(answers))]
         return answers
 
     def _confirmed_exposures(self, source: _SourceAgg) -> list[dict]:
@@ -399,8 +404,8 @@ class WindowFeatureBuilder:
                     continue  # the site's answer to many paths
                 if len(source.unserved_ok_sizes.get(size, ())) >= 2:
                     continue  # this address's own probes got that same page
-                now = self._site_dirs.get((exp["domain"], _parent(path)), [])
-                if _echoed_page(path, size, {**dict(seen), **dict(now)}):
+                now = self._site_dirs.get((exp["domain"], _parent(path)), {})
+                if _echoed_page(path, size, {**seen, **now}):
                     continue  # the directory's page, echoing the path
                 real.append({"path": path, "status": status, "bytes": size,
                              **({"line": line} if line else {})})
