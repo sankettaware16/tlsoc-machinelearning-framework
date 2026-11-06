@@ -107,16 +107,16 @@ informational: exposure alerts per day by kind and severity; distinct
   build's web_recon output is unaffected; the change takes effect only for
   a use case other than web_recon, and is required before bot_detection
   goes live.
-- **2026-11-06, committed on the dev box, not yet on prod: console-only
-  update, verifier signatures.** A
+- **2026-11-06 19:18 IST: console-only update (0924539), verifier
+  signatures.** A
   mid-window read found alert 698774b0 (`/error_log` on a department site, 350 KB) marked
   "likely": it is a public PHP error log (`[04-Apr-2025 09:25:09 UTC] PHP
   Warning: …`), and the log signature knew only ISO timestamps. The verifier
   now also recognises PHP and Apache error-log timestamps, and ASP.NET
-  trace / ELMAH pages (HTML by nature, like server-status). To take effect
-  the console is restarted with its launch command and the alert re-checked
-  (its earlier "likely" record stays in the file); the time is to be recorded
-  here. Detection and delivery unchanged.
+  trace / ELMAH pages (HTML by nature, like server-status). The console was
+  restarted with its launch command (SIGTERM, runtime untouched) and the
+  alert re-checked at 19:19 IST: confirmed, "log file". Its earlier "likely"
+  record stays in the file. Detection and delivery unchanged.
 - **Same read, recorded for the verdict, nothing changed:** two alerts of
   6 Nov (84c087c6, 671f314d: `trace.axd` under one site's `/project/N/` and
   another's `/<module>/<tab>/`) are entirely not reproducible. Both sites answer
