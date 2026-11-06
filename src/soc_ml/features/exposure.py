@@ -339,6 +339,11 @@ VERIFY_VERDICTS = {
 _READ_BYTES = 2048
 _TIMEOUT_S = 8.0
 _HTML = re.compile(rb"^\s*(<!doctype html|<html|<head|<body|<!--|<meta|<script|<title)", re.I)
+#: A log line's timestamp: ISO ([2026-11-06 01:23), PHP's error_log
+#: ([04-Apr-2025 09:25:09 UTC] — prod, 6 Nov: read as "likely" without it) and
+#: Apache's error log ([Wed Nov 06 01:23:45.1 2026]).
+_LOG_LINE = re.compile(rb"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}|\d{2}-[A-Z][a-z]{2}-\d{4} \d{2}:\d{2}"
+                       rb"|[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2})")
 _ENV_LINE = re.compile(rb"^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_.]*[ \t]*=", re.M)
 _APACHE = re.compile(rb"^\s*(#|<IfModule|<Files|<Directory|RewriteEngine|RewriteRule|"
                      rb"RewriteCond|Options|Order|Deny|Allow|Require|DirectoryIndex|"
@@ -374,9 +379,14 @@ def _signature(kind: str, root: str, body: bytes) -> str | None:
         if (b"Server Version:" in head or b"Apache Server Status" in head
                 or b"Server Status for" in head):
             return "server status"
+        # ASP.NET's trace viewer opens with its own CSS class; ELMAH titles its page.
+        if b"tracecontent" in head or b"Application Trace" in head:
+            return "ASP.NET trace"
+        if b"Error log for" in head and b"ELMAH" in head.upper():
+            return "ELMAH error log"
         if _HTML.match(head):
             return None
-        if re.search(rb"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", head) or b"Stack trace" in head:
+        if _LOG_LINE.search(head) or b"Stack trace" in head:
             return "log file"
         if head.lstrip().startswith(b"{") and (b"activeProfiles" in head or b"propertySources" in head):
             return "actuator env"

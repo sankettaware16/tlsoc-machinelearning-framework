@@ -107,6 +107,30 @@ informational: exposure alerts per day by kind and severity; distinct
   build's web_recon output is unaffected; the change takes effect only for
   a use case other than web_recon, and is required before bot_detection
   goes live.
+- **2026-11-06, committed on the dev box, not yet on prod: console-only
+  update, verifier signatures.** A
+  mid-window read found alert 698774b0 (`/error_log` on a department site, 350 KB) marked
+  "likely": it is a public PHP error log (`[04-Apr-2025 09:25:09 UTC] PHP
+  Warning: …`), and the log signature knew only ISO timestamps. The verifier
+  now also recognises PHP and Apache error-log timestamps, and ASP.NET
+  trace / ELMAH pages (HTML by nature, like server-status). To take effect
+  the console is restarted with its launch command and the alert re-checked
+  (its earlier "likely" record stays in the file); the time is to be recorded
+  here. Detection and delivery unchanged.
+- **Same read, recorded for the verdict, nothing changed:** two alerts of
+  6 Nov (84c087c6, 671f314d: `trace.axd` under one site's `/project/N/` and
+  another's `/<module>/<tab>/`) are entirely not reproducible. Both sites answer
+  the path with an ordinary page whose size varies per path (the second's
+  page echoes the path; the first serves the parent page), so the exact-size
+  catch-all rule did not see them. Fixing it changes how exposures are judged
+  catch-all and would void this window: it is built offline for M-003b.
+- **H3's input.** Elasticsearch keeps about five days, so the window's first
+  days would expire before the verdict. The same raw lines Logstash indexes
+  are kept on the log server (12 × 2 GB rotations); the window's files were
+  copied to `data/corpus/m003/` on prod on 6 Nov (2 Nov 15:21 UTC – 6 Nov
+  03:55 UTC so far, gzip-tested; 54 s missing at the 4 Nov 08:20 UTC
+  rotation, copytruncate). H3 runs the offline rule check over these files
+  instead of an ES export; the rest of the window is copied after it closes.
 
 ## Verdict
 

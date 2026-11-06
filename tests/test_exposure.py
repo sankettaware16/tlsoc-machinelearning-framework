@@ -250,6 +250,33 @@ def test_a_status_page_is_confirmed_although_it_is_html() -> None:
     assert out["verdict"] == "confirmed" and out["signature"] == "server status"
 
 
+def test_a_php_error_log_is_confirmed() -> None:
+    """prod, 6 Nov: a public /error_log of PHP warnings was only "likely"."""
+    out, _ = _verify("debug", "/error_log", _Resp(
+        b"[04-Apr-2025 09:25:09 UTC] PHP Warning:  Constant X already defined in "
+        b"/home/site/config.php on line 17\n", status=200, ctype=""))
+    assert out["verdict"] == "confirmed" and out["signature"] == "log file"
+    out, _ = _verify("debug", "/logs/error.log", _Resp(
+        b"[Wed Nov 06 01:23:45.123456 2026] [php:error] [pid 1] PHP Fatal error\n"))
+    assert out["verdict"] == "confirmed"
+
+
+def test_trace_viewers_are_confirmed_although_html_and_a_page_is_not() -> None:
+    out, _ = _verify("debug", "/trace.axd", _Resp(
+        b"<html><head><style>span.tracecontent b { color:white }</style>", status=200,
+        ctype="text/html"))
+    assert out["verdict"] == "confirmed" and out["signature"] == "ASP.NET trace"
+    out, _ = _verify("debug", "/elmah.axd", _Resp(
+        b"<!DOCTYPE html><html><head><title>Error log for / on WEB01 (Page #1)</title>"
+        b"<meta name=\"generator\" content=\"ELMAH\">", status=200, ctype="text/html"))
+    assert out["signature"] == "ELMAH error log"
+    # prod, 6 Nov: /project/13/trace.axd answered by the project's own page.
+    out, _ = _verify("debug", "/project/13/trace.axd", _Resp(
+        b"<!DOCTYPE html><html><head><title>Project 13</title>", status=200,
+        ctype="text/html"))
+    assert out["verdict"] == "not_reproducible"
+
+
 def test_the_download_line_leads_the_evidence(tmp_path: Path) -> None:
     scan = [_ev(f"/probe{i}", 404, size=150 + i, seconds=i) for i in range(12)]
     _run(tmp_path, scan[:3] + [_ev("/.env", size=913, seconds=3.5)] + scan[3:])
