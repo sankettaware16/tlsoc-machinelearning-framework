@@ -89,6 +89,27 @@ informational: exposure alerts per day by kind and severity; distinct
 
 *Recorded as they happen, before the window closes.*
 
+- **2026-11-06 21:31 IST, before the window: build 57b4520 deployed** (the
+  echo rule). Clean SIGTERM drain (5 s), started with the launch command,
+  resumed from the checkpoint with the 16 open exposures, same bundles. No
+  watchdog line.
+- **The feed had stopped at 19:39 IST, before that deploy.** The parser began
+  writing one file per worker (`nginx.w0..w2.json`) and `nginx.json` stopped
+  growing; the runtime, tailing that one file, read nothing for two hours.
+  Nothing on the soc-ml side was changed at 19:39.
+- **21:41 IST: build 29c9484 deployed** — `--input` is now the quoted glob
+  `/var/log/soc_output/nginx*.json`, the worker files merged by event time;
+  the checkpoint's position in `nginx.json` carried over by inode (not
+  re-read). Clean drain (3 s), launch command with the glob, no watchdog
+  line. The two-hour backlog was read from the worker files' start, so the
+  gap is closed rather than skipped. The workers re-deliver about 0.44% of
+  lines (0.01% before the change); not deduplicated by this build. Both
+  deploys are before the window, which opens 2026-11-07 00:00 IST.
+- **Launch command from this build:** `SOC_ML_CONFIG=config/site.local.yaml
+  nohup setsid .venv/bin/soc-ml run --uc bot_detection,web_recon --input
+  "/var/log/soc_output/nginx*.json" --mode live --daily-budget 3`; the
+  watchdog's default input is the same glob.
+
 ## Verdict
 
 *(appended after the window closes)*
