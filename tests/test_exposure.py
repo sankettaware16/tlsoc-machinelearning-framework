@@ -91,6 +91,48 @@ def test_the_sites_catch_all_page_is_not_an_exposure() -> None:
     assert not [e for w in ev for e in w["exposures"]]
 
 
+def test_a_page_that_echoes_the_path_is_not_an_exposure() -> None:
+    """prod, 6 Nov: a soft-404 printing the path 5 times answered /x/.env with
+    125,629 bytes and /x/.htaccess, /x/trace.axd with 125,654 — no size three
+    times, so the exact-size rule delivered all three."""
+    d = "/tabs/nojs/tab_a"
+    ev = _evidence(_profile(), [_ev(f"{d}/.env", size=125_629),
+                                _ev(f"{d}/.htaccess", size=125_654, seconds=1),
+                                _ev(f"{d}/trace.axd", size=125_654, seconds=2)])
+    assert not [e for w in ev for e in w["exposures"]]
+
+
+def test_a_routed_parent_page_is_not_an_exposure() -> None:
+    """prod, 6 Nov: /project/13/<anything> served the project page; the
+    scanner's own random probes got 20,791 and 20,790 bytes, trace.axd 20,781."""
+    ev = _evidence(_profile(), [_ev("/project/13/2085030971309886763", size=20_791),
+                                _ev("/project/13/967931374307874472", size=20_790, seconds=1),
+                                _ev("/project/13/trace.axd", size=20_781, seconds=2)])
+    assert not [e for w in ev for e in w["exposures"]]
+
+
+def test_real_files_beside_pages_and_each_other_are_still_exposures() -> None:
+    """Sizes that differ, or follow no common echo count, are files. Two
+    copies of one .env (913 and 914 bytes) are both real."""
+    ev = _evidence(_profile(), [
+        _ev("/about", ip="198.51.100.1", size=24_310),
+        _ev("/contact", ip="198.51.100.2", size=19_877, seconds=1),
+        _ev("/.env", size=913, seconds=2), _ev("/.env.bak", size=914, seconds=3),
+        _ev("/sites/default/files/.htaccess", size=486, seconds=4),
+        _ev("/sites/default/files/2024-05/report.pdf", ip="198.51.100.3", size=512_004,
+            seconds=5)])
+    assert sorted(e["root"] for w in ev for e in w["exposures"]) == [
+        "/.env", "/.env.bak", "/sites/default/files/.htaccess"]
+
+
+def test_one_echo_coincidence_is_not_a_catch_all() -> None:
+    """Two siblings are needed, and with the same echo count."""
+    ev = _evidence(_profile(), [_ev("/app/x", ip="198.51.100.1", size=1_000),
+                                _ev("/app/longer-name", ip="198.51.100.2", size=1_100),
+                                _ev("/app/.env", size=1_001, seconds=2)])
+    assert [e["root"] for w in ev for e in w["exposures"]] == ["/app/.env"]
+
+
 def test_a_real_file_that_shares_its_size_with_one_page_is_still_an_exposure() -> None:
     """The main site's real .htaccess was 8,024 bytes — so was one ordinary
     page. One coincidence is not a catch-all."""
