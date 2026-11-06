@@ -210,10 +210,11 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
       its window for the exposure alerts below
 - [ ] **First production use case — sensitive-file exposure alerts (D-040).**
       Deployed 2026-11-02. Offline on 29 Oct - 2 Nov: 7 exposures (1.6/day),
-      6 confirmed by content. Acceptance run M-003, 3-10 Nov
-      (docs/measurements/M-003-exposure-alerts-7d.md); analyst console with
-      verification and triage; SIEM shipper (`soc-ml ship`) waiting for its
-      Elasticsearch API key
+      6 confirmed by content. M-003 (3-10 Nov) voided on 6 Nov: two of its
+      eight alerts were pages that echo the path (D-041, fixed). Acceptance
+      run M-003b, 7-14 Nov (docs/measurements/M-003b-exposure-alerts-7d.md);
+      analyst console with verification and triage; SIEM shipper live since
+      3 Nov; `scripts/check_exposures.py` replays the rule offline (H3)
 - [ ] bot_detection retrain is blocked until its label/features can represent
       a headless browser (D-032)
 

@@ -132,6 +132,23 @@ informational: exposure alerts per day by kind and severity; distinct
   rotation, copytruncate). H3 runs the offline rule check over these files
   instead of an ES export; the rest of the window is copied after it closes.
 
+- **2026-11-06 (evening IST), inside the window: M-003 is voided.** The
+  echo catch-all rule (D-041) changes how exposures are judged catch-all and
+  is deployed, which voids the window by its own rule. Why it is stopped
+  rather than run out: the two false positives above are understood and
+  their fix is measured (the replay of this window keeps the six confirmed
+  exposures and drops exactly the ten not-reproducible ones); with H1
+  projected at 6 of 8 (75%), the remaining four days would only confirm the
+  failure the protocol already names the consequence for. The week is
+  re-run as M-003b from 7 Nov.
+
 ## Verdict
 
-*(appended after the window closes)*
+**Void** (see the last event above). Partial read at the void, recorded for
+the record and not as a verdict: 3-6 Nov (to the void) delivered 0 / 3 / 1 / 4 exposure
+alerts; of the eight, none had an analyst verdict; the verifier confirmed
+five, found two entirely not reproducible (catch-all pages, D-041) and one
+mixed (a confirmed files-directory .htaccess beside three catch-all
+answers). H4 held: no runtime restart, no traceback. H3, run with
+`scripts/check_exposures.py` over the log server's files to 6 Nov 09:25 IST:
+all 16 alertable exposures found offline were recorded live, none missing.

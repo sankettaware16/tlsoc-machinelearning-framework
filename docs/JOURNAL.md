@@ -10,6 +10,60 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-11-06 — Catch-all pages that echo the path; M-003 voided for M-003b
+
+### D-041 · A page whose size moves with the path's length is a catch-all
+
+**Context.** A mid-window read of M-003 on 6 Nov found two of the week's
+eight exposure alerts entirely not reproducible: `trace.axd`, `.htaccess`
+and `.env` under directories where the site answers any name with a page.
+The exact-size rule (D-040: a size the site returned for two other paths)
+could not see them, because these pages print the requested path. One
+site's soft-404 prints it five times (`/x/.env` 125,629 bytes,
+`/x/.htaccess` and `/x/trace.axd` 125,654); another routes
+`/project/13/<anything>` to the project page, printing it once (the
+scanner's own random probes 20,791 and 20,790 bytes, `trace.axd` 20,781).
+No size repeats, so nothing was dropped.
+
+**Decision.** Keep each directory's last 32 successful answers per site. A
+sensitive file is the directory's page when two other paths there differ in
+size from it by the same whole number of bytes per path character, 1 to 8
+(one byte of slack for a trailing slash the page does not print; equal
+length and equal size matches any count). The exact-size rule stays as it
+was. The directory's answers are captured when the file is requested and
+again when its window closes: a busy directory moves on in between, and
+with 8 kept the replay lost the probes of one directory the scanner had
+crawled first.
+
+**Measured** with `scripts/check_exposures.py`, which replays the log
+server's raw lines (they outlive Elasticsearch's five days) through the same
+builder and tracker, over M-003's window to 6 Nov 09:25 IST (10.9 M events).
+The previous rule reproduces the live run exactly: the same 16 alertable
+exposures, none missing. The new rule keeps 6 of them —
+every one the verifier confirmed (two web.config, the main .htaccess, a
+server-status page, a PHP error log, a files-directory .htaccess) — and
+drops the other 10: exactly the ten the verifier found not reproducible
+(seven `trace.axd`, two `.htaccess`, one `.env`). Per day, M-003's eight
+alerts would have been six (3 / 1 / 2 on 4-6 Nov), all confirmed by content.
+
+**Rules out.** A size tolerance (a band around a size matches real files
+next to pages); fetching every candidate before delivery (an outbound
+request in the detection path, and only for the institute's own domains).
+
+**Lives in.** `features/window_features.py` (`_remember_dir`,
+`_echoed_page`), `scripts/check_exposures.py`, tests in
+`tests/test_exposure.py`. Measured by M-003b.
+
+### M-003 voided for M-003b
+
+M-003's own consequence for an H1 failure is "fix, re-run as M-003b"; with
+H1 projected at 6 of 8 and the defect understood, four more days of
+delivering it measure nothing new. The fix is deployed and the week re-run
+from 7 Nov. The verifier also learned PHP and Apache error-log timestamps and
+ASP.NET trace / ELMAH pages (a console change, inside M-003's rules).
+
+---
+
 ## 2026-11-02 — The alert an analyst can act on: sensitive-file exposure
 
 ### D-040 · Escalate sensitive kinds, not unseen file types; alert exposures whether or not the models fire
