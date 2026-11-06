@@ -210,3 +210,47 @@ def test_reads_the_real_sample_logs() -> None:
     assert len(events) == 2000
     assert src.stats.failed == 0
     assert src.stats.failure_rate == 0.0
+
+
+def test_a_glob_merges_worker_files_by_time(tmp_path: Path) -> None:
+    """prod, 6 Nov: the parser went from nginx.json to one file per worker.
+    Read file after file, a backlog arrives hours out of order."""
+    t = "2026-11-06T14:0{}:00Z"
+    write(tmp_path, "nginx.w0.json", [ecs(path="/0a", ts=t.format(1)), ecs(path="/0b", ts=t.format(4))])
+    write(tmp_path, "nginx.w1.json", [ecs(path="/1a", ts=t.format(2)), ecs(path="/1b", ts=t.format(5))])
+    write(tmp_path, "nginx.w2.json", [ecs(path="/2a", ts=t.format(3))])
+    write(tmp_path, "squid.w0.json", [ecs(path="/proxy", ts=t.format(0))])
+    write(tmp_path, "nginx.json.1", [ecs(path="/rotated", ts=t.format(0))])
+
+    src = FileSource(tmp_path / "nginx*.json")
+    assert [e.url_path for e in src.read()] == ["/0a", "/1a", "/2a", "/0b", "/1b"]
+
+
+def test_moving_from_a_file_to_a_glob_keeps_the_position(tmp_path: Path) -> None:
+    """The live checkpoint was taken with the file itself as the input: the
+    same file under the glob must not be read again (every alert in it would
+    be delivered twice), and the new worker files must be read from 0."""
+    old = write(tmp_path, "nginx.json", [ecs(path="/old1"), ecs(path="/old2")])
+    single = FileSource(old)
+    assert len(list(single.read())) == 2
+    cp = single.checkpoint()
+    write(tmp_path, "nginx.w0.json", [ecs(path="/new")])
+
+    glob = FileSource(tmp_path / "nginx*.json")
+    glob.seek(cp)
+    assert [e.url_path for e in glob.read()] == ["/new"]
+    again = FileSource(tmp_path / "nginx*.json")
+    again.seek(glob.checkpoint())
+    assert list(again.read()) == []
+
+
+def test_a_checkpoint_taken_mid_merge_does_not_rewind(tmp_path: Path) -> None:
+    write(tmp_path, "a.json", [ecs(path="/a1", ts="2026-11-06T14:00:00Z"),
+                               ecs(path="/a2", ts="2026-11-06T14:00:02Z")])
+    write(tmp_path, "b.json", [ecs(path="/b1", ts="2026-11-06T14:00:01Z")])
+    src = FileSource(tmp_path)
+    it = src.read()
+    assert [next(it).url_path for _ in range(2)] == ["/a1", "/b1"]
+    resumed = FileSource(tmp_path)
+    resumed.seek(src.checkpoint())
+    assert [e.url_path for e in resumed.read()] == ["/a2"]

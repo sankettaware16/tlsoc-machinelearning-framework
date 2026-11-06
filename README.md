@@ -102,10 +102,10 @@ soc-ml status
 soc-ml promote
 
 # 4. Watch quietly first (records alerts, delivers none)
-soc-ml run --input /var/log/soc_output/ --mode shadow
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode shadow
 
 # 5. Go live (delivers alerts)
-soc-ml run --input /var/log/soc_output/ --mode live
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode live
 ```
 
 Alerts are written to `data/alerts/web_recon.ndjson` — one JSON alert per line,
@@ -114,7 +114,7 @@ ready for any SIEM.
 **No historical logs to learn from?** Let it learn from live traffic first:
 
 ```bash
-soc-ml run --input /var/log/soc_output/ --mode shadow --allow-cold-start
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode shadow --allow-cold-start
 ```
 
 **Just want to see it work right now, without deploying anything?** Run a

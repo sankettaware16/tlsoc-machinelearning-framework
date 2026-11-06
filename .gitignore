@@ -16,6 +16,7 @@ data/state/*
 data/alerts/*
 # Captured real attacks used as regression gates (check_candidate --incident)
 data/incidents/*
+data/corpus/*
 !data/**/.gitkeep
 
 # Real log data — NEVER commit (contains real IPs / PII). Only synthetic

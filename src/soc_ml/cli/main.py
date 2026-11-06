@@ -782,7 +782,9 @@ def build_parser() -> argparse.ArgumentParser:
     tr.set_defaults(func=cmd_train)
 
     rn = sub.add_parser("run", help="run the live detection pipeline (streaming)")
-    rn.add_argument("--input", help="parser output dir to tail (default: config input_dir)")
+    rn.add_argument("--input", help="parser output to tail: a file, a directory, or a quoted "
+                    "glob such as '/var/log/soc_output/nginx*.json' (one file per parser "
+                    "worker, merged by time; default: config input_dir)")
     rn.add_argument("--uc", default="web_recon",
                     help="use case slug(s), comma-separated; scored per window "
                          "in dependency order (e.g. bot_detection,web_recon)")

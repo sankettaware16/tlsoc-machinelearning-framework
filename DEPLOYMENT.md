@@ -44,10 +44,10 @@ soc-ml status
 soc-ml promote            # promotes the candidate -> "current" (serving)
 
 # 3. RUN in shadow first — scores real traffic, delivers nothing, records everything
-soc-ml run --input /var/log/soc_output/ --mode shadow
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode shadow
 
 # 4. When shadow output looks right, RUN live — delivers alerts
-soc-ml run --input /var/log/soc_output/ --mode live
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode live
 
 # 5. Watch it
 soc-ml status
@@ -74,7 +74,7 @@ environment's normal, and you need to trust it. Follow the spec's staging:
 traffic before it starts judging:
 
 ```bash
-soc-ml run --input /var/log/soc_output/ --mode shadow --allow-cold-start
+soc-ml run --input '/var/log/soc_output/nginx*.json' --mode shadow --allow-cold-start
 ```
 
 It buffers `warmup_events` (default 200k) of live traffic, trains a first model,

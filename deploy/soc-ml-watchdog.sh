@@ -11,7 +11,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 
 USECASES="${SOC_ML_USECASES:-bot_detection,web_recon}"
-INPUT="${SOC_ML_INPUT:-/var/log/soc_output/nginx.json}"
+INPUT="${SOC_ML_INPUT:-/var/log/soc_output/nginx*.json}"  # every parser worker's file
 MODE="${SOC_ML_MODE:-live}"
 BUDGET="${SOC_ML_DAILY_BUDGET:-3}"
 LOG=data/state/runtime.log

@@ -18,10 +18,17 @@ Three correctness details that matter more than they look:
   a different file.
 * **Unparseable lines are dead-lettered, never dropped** (NFR-09). A source that
   quietly discards malformed input is indistinguishable from one that is working.
+* **Several files are merged by time.** A parser with several workers writes one
+  file each (prod, 6 Nov: ``nginx.json`` became ``nginx.w0..w2.json``). Read one
+  after another, a backlog arrives hours out of order and every window closes
+  before its late events; merged on the event timestamp it arrives in order.
+  A position follows the file's inode, so a changed file layout neither
+  re-reads a file nor skips one.
 """
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import time
@@ -78,7 +85,8 @@ class FileSource(Source):
     """Yield :class:`Event` objects from newline-delimited ECS JSON files.
 
     Args:
-        path: file or directory of parser output.
+        path: file or directory of parser output, or a glob of files
+            (``/var/log/soc_output/nginx*.json``).
         pattern: glob used when ``path`` is a directory.
         follow: keep polling for appended data and new files (live mode).
             ``False`` reads what exists and stops (offline/backtest).
@@ -106,6 +114,10 @@ class FileSource(Source):
     ) -> None:
         self.root = Path(path).expanduser()
         self.pattern = pattern
+        #: ``path`` is itself a glob: its directory, matched without recursion.
+        self._glob = any(c in self.root.name for c in "*?[")
+        if self._glob:
+            self.root, self.pattern = self.root.parent, self.root.name
         self.follow = follow
         self.poll_interval_s = poll_interval_s
         #: Called between polls of a followed source. A consumer that does its
@@ -118,6 +130,8 @@ class FileSource(Source):
 
         self._offsets: dict[str, int] = {}
         self._inodes: dict[str, int] = {}
+        #: inode -> offset from the checkpoint, for files whose key changed.
+        self._by_inode: dict[int, int] = {}
         self._dlq_fh: Any = None
         self.stats = IngestStats()
         self._stopped = False
@@ -125,6 +139,8 @@ class FileSource(Source):
     # -- discovery --------------------------------------------------------- #
 
     def _files(self) -> list[Path]:
+        if self._glob:
+            return sorted(p for p in self.root.glob(self.pattern) if p.is_file())
         if self.root.is_file():
             return [self.root]
         if not self.root.is_dir():
@@ -147,8 +163,15 @@ class FileSource(Source):
         while not self._stopped:
             files = self._files()
             self.stats.files_seen = len(files)
-            for path in files:
-                yield from self._read_file(path, first_pass=first_pass)
+            streams = [self._read_file(path, first_pass=first_pass) for path in files]
+            merged = (streams[0] if len(streams) == 1 else
+                      heapq.merge(*streams, key=lambda item: item[0].timestamp))
+            for event, key, offset in merged:
+                # Recorded as each event leaves, not as its line is read: the
+                # merge reads one event ahead in every file, and a checkpoint
+                # taken in between must not skip it.
+                self._offsets[key] = offset
+                yield event
             if not self.follow:
                 return
             first_pass = False
@@ -156,7 +179,8 @@ class FileSource(Source):
                 self.on_idle()
             time.sleep(self.poll_interval_s)
 
-    def _read_file(self, path: Path, *, first_pass: bool) -> Iterator[Event]:
+    def _read_file(self, path: Path, *, first_pass: bool
+                   ) -> Iterator[tuple[Event, str, int]]:
         key = self._key(path)
         try:
             st = path.stat()
@@ -168,6 +192,10 @@ class FileSource(Source):
         offset = self._offsets.get(key)
         known_inode = self._inodes.get(key)
         self._inodes[key] = inode
+        if offset is None and self._by_inode.get(inode, size + 1) <= size:
+            # Same file under a new key (the input moved from the file to a
+            # glob of its directory): keep its position.
+            offset = self._by_inode.pop(inode)
         if offset is None:
             # A live tail with no checkpoint may skip the backlog; an offline
             # read never does, or a backtest would silently see nothing.
@@ -216,7 +244,7 @@ class FileSource(Source):
                     if not event.is_request:
                         self.stats.skipped_non_request += 1
                         continue
-                    yield event
+                    yield event, key, offset
 
         self._offsets[key] = offset
 
@@ -259,11 +287,14 @@ class FileSource(Source):
         """
         self._offsets = dict(checkpoint.get("offsets") or {})
         self._inodes = dict(checkpoint.get("inodes") or {})
+        self._by_inode = {ino: self._offsets[k] for k, ino in self._inodes.items()
+                          if k in self._offsets}
 
     def rewind(self) -> None:
         """Replay everything from the start (FR-04)."""
         self._offsets.clear()
         self._inodes.clear()
+        self._by_inode.clear()
 
     def stop(self) -> None:
         """Ask a following reader to finish after the current pass."""
