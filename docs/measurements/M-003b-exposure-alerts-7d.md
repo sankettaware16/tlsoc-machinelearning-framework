@@ -175,7 +175,10 @@ By the letter H3 fails: the offline replay found an exposure not recorded
 live. The defect is in the catch-all memory both share, not in delivery or
 ordering; the consequence applies regardless. **Fixed before any further
 measurement: D-043** (least recently *seen* size goes first); the same
-simulation under D-043 keeps 1,754 from both start points.
+simulation under D-043 keeps 1,754 from both start points. Re-run on
+19805b3 (D-043) over the same corpus, the replay delivers 6 — the 7 less the
+portal `.env` — with 34 folds; 0 offline exposures unrecorded live, and 0
+live keys it does not find.
 
 ### H4 — 0 watchdog restarts, 0 tracebacks: pass
 
