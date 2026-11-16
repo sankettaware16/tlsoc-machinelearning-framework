@@ -93,6 +93,26 @@ def test_the_sites_catch_all_page_is_not_an_exposure() -> None:
     assert not [e for w in ev for e in w["exposures"]]
 
 
+def test_a_busy_sites_catch_all_size_is_not_forgotten(monkeypatch) -> None:
+    """prod, 11 Nov (M-003b H3): a site with ~25,000 distinct 2xx sizes a week
+    served its 1,754-byte home page for /, wp-login.php and /.env alike. The
+    size memory dropped the oldest-*inserted* size when full, so the hot page
+    size was forgotten 23 minutes before /.env and the page passed as a file."""
+    from soc_ml.features import window_features
+    monkeypatch.setattr(window_features, "_MAX_SITE_SIZES", 8)
+    page = [_ev(p, ip="198.51.100.7", size=1_754, seconds=i)
+            for i, p in enumerate(("/", "/wp-login.php", "/xmlrpc.php"))]
+    # API answers of ever-new sizes, the home page still served between them.
+    busy = []
+    for i in range(40):
+        busy.append(_ev(f"/api/v1/item/{i}", ip="198.51.100.8", size=5_000 + i,
+                        seconds=10 + i))
+        if i % 4 == 0:
+            busy.append(_ev("/", ip="198.51.100.9", size=1_754, seconds=10.5 + i))
+    ev = _evidence(_profile(), page + busy + [_ev("/.env", size=1_754, seconds=60)])
+    assert not [e for w in ev for e in w["exposures"]]
+
+
 def test_a_page_that_echoes_the_path_is_not_an_exposure() -> None:
     """prod, 6 Nov: a soft-404 printing the path 5 times answered /x/.env with
     125,629 bytes and /x/.htaccess, /x/trace.axd with 125,654 — no size three

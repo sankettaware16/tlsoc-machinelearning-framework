@@ -345,11 +345,15 @@ class WindowFeatureBuilder:
                 del self._site_sizes[next(iter(self._site_sizes))]
             sizes = {}
         self._site_sizes[site] = sizes  # most recently seen last
-        paths = sizes.get(size)
+        # Least recently *seen* goes first. Dropping the oldest-inserted size
+        # forgot a site's home page, served every few minutes, under a flood
+        # of API sizes, and the page then passed as /.env (prod, 11 Nov).
+        paths = sizes.pop(size, None)
         if paths is None:
             if len(sizes) >= _MAX_SITE_SIZES:
                 del sizes[next(iter(sizes))]
-            paths = sizes[size] = set()
+            paths = set()
+        sizes[size] = paths  # most recently seen last
         if len(paths) < 3:
             paths.add(path)
         siblings = self._remember_dir(site, path, size)

@@ -10,6 +10,46 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-11-16 — M-003b's H3: a busy site forgot its own home page
+
+### D-043 · The catch-all size memory drops the least recently seen size
+
+**Context.** M-003b's completeness replay delivered one exposure the live
+runtime never recorded: `/.env` on a portal, 200, 1,754 bytes. That is the
+site's home page, served for `/` about a thousand times that week and for
+dozens of probe paths; live dropped it correctly. The replay delivered it
+because each site's size memory (D-040: a size returned for two other paths
+is the catch-all) holds 20,000 sizes and, when full, dropped the
+*oldest-inserted* one. The site's API answered ~25,000 distinct 2xx sizes in
+the week, so the home page's size, inserted first and hit constantly, was
+the first to go; the next request of that size counted as new. The replay
+began remembering twelve hours before the runtime did, filled up first, and
+forgot 1,754 23 minutes before `/.env`. Live held 17,552 of that site's
+sizes then and would have done the same within days.
+
+**Decision.** Every sighting moves the size to most-recently-seen; when the
+site's memory is full, the least recently seen size goes. A page served
+every few minutes cannot be forgotten. Same cap, same memory; one dict
+pop-and-insert per successful request.
+
+**Verified.** A simulation of that site's memory over the week's raw lines:
+under the old order 1,754 is evicted from the replay's start (1 other path
+known at `/.env`) and kept from the runtime's (2); under D-043 it is kept
+from both (3 and 2). The new test fails on the old code.
+
+**Rules out.** Raising the cap (an API that answers more sizes defeats any
+cap under insertion order); persisting the memory across restarts (live and
+replay would still differ by start point, and that is what H3 compares).
+
+**Risk.** None to delivery: a forgotten size could only make a page look
+like a file. With D-042 such a page would also be held back by its content.
+
+**Lives in.** `features/window_features.py` (`_note_exposure`); test in
+`tests/test_exposure.py`. M-003b's verdict records the miss; M-003c measures
+the build with it.
+
+---
+
 ## 2026-11-16 — M-003b: two pages no size rule can see; the content check moves before delivery
 
 ### D-042 · Fetch a new exposure once before alerting it; hold back an ordinary web page
