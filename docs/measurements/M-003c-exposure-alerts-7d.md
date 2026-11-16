@@ -127,6 +127,12 @@ informational: exposure alerts per day by kind and severity; checks made
   is delivered. Checked against M-003b's files, it gives that week's figures
   (0/1/0/0/5/0/1 per day, 5 of 7 correct). Its counts are a view; the verdict
   is still computed and written here after the window.
+- **16:26 IST, before the window: build 19805b3 deployed** (D-043, the
+  catch-all size memory drops the least recently seen size; M-003b's H3).
+  Stopped at minute%5==1, clean SIGTERM drain (8 s), started with the launch
+  command, resumed from the checkpoint, same bundles, no watchdog line. The
+  commit under measurement is 19805b3; the window still opens 2026-11-17
+  00:00 IST.
 
 ## Verdict
 

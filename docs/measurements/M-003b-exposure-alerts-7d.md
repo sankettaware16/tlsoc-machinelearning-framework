@@ -193,6 +193,9 @@ The only "runtime not running" lines in `runtime.log` are from 12 and
   confirmed exposures are still served, including two critical
   `settings.php.old` files (PHP source) on two department sites, first
   alerted 14 Nov 01:35 IST, after the window.
+- Exposures the echo rule dropped that the exact-size rule would have
+  delivered: none. The same replay with the echo rule off gives the same 7
+  deliveries.
 - Under D-042 (a counterfactual from the verifier's checks two minutes after
   each delivery): 5 alerts, 0 / 1 / 0 / 0 / 3 / 0 / 1, all confirmed.
 
