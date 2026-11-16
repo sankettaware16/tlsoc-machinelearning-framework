@@ -22,6 +22,7 @@ from typing import Any
 
 from soc_ml.registry.store import ModelRegistry
 from soc_ml.web.alerts import AlertBook
+from soc_ml.web.measurement import MeasurementBook
 
 __all__ = ["DashboardState"]
 
@@ -107,6 +108,9 @@ class DashboardState:
         self.alerts_dir = self.data_root / "alerts"
         self.registry = ModelRegistry(self.data_root)
         self.repo_root = repo_root or Path(__file__).resolve().parents[3]
+        #: The running measurement, scored by its own doc's rules.
+        self.measurements = MeasurementBook(self.data_root, self.repo_root, self.alerts,
+                                            timezone=timezone)
         self._cache: dict[str, tuple[float, Any]] = {}
         self._lock = threading.Lock()
         self._samples: deque[dict[str, Any]] = deque(maxlen=_SAMPLES)

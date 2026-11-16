@@ -121,6 +121,11 @@ textarea,select{background:var(--panel2);color:var(--fg);border:1px solid var(--
                 border-radius:6px;padding:6px 8px;font:inherit;font-size:13px}
 textarea{width:100%;min-height:70px}
 .tally b{font-size:20px}
+.hyp .figure{font-size:15px;font-weight:650;margin:8px 0 4px;font-variant-numeric:tabular-nums}
+.hyp .rule{color:var(--dim);font-size:12px;line-height:1.5}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.over{color:var(--bad);font-weight:700}
+tr.future td{color:var(--dim)}
 </style>
 </head>
 <body>
@@ -131,6 +136,7 @@ textarea{width:100%;min-height:70px}
   <span id="modePill" class="pill mode" hidden></span>
   <nav class="views">
     <button class="tab on" id="navAlerts" onclick="location.hash='#queue/incidents'">Alerts</button>
+    <button class="tab" id="navMeasure" onclick="location.hash='#measure'">Measurement</button>
     <button class="tab" id="navOps" onclick="location.hash='#ops'">Operations</button>
   </nav>
   <div class="spacer"></div>
@@ -156,6 +162,23 @@ textarea{width:100%;min-height:70px}
       <div class="card wrap" id="queue"><div class="empty">loading…</div></div>
     </section>
     <section id="detail" hidden></section>
+  </div>
+
+  <div id="viewMeasure" hidden>
+    <div class="tabs" id="msTabs"></div>
+    <section id="msHead"></section>
+    <section id="msHypBox"><h2>Hypotheses — live, by the doc's own rules</h2>
+      <div id="msHyp" class="grid g3"></div></section>
+    <section id="msDaysBox"><h2>Day by day (local days)</h2>
+      <div id="msDays" class="card wrap"></div></section>
+    <section id="msAlertsBox"><h2>Exposure alerts in the window — click one to triage it</h2>
+      <div id="msAlerts" class="card wrap"></div></section>
+    <section id="msHeldBox"><h2>Withheld as an ordinary page (H5 reads each one)</h2>
+      <div id="msHeld" class="card wrap"></div></section>
+    <section id="msOpenBox"><h2>Still exposed — the latest check found it served</h2>
+      <div id="msOpen" class="card wrap"></div></section>
+    <section id="msVerdictBox"><h2>Verdict on record</h2>
+      <div id="msVerdict" class="card"></div></section>
   </div>
 
   <div id="viewOps" hidden>
@@ -992,17 +1015,205 @@ async function reverify(id){
   }catch(e){ toast("Re-check failed: " + e.message, "err"); }
 }
 
+/* ---------------------------------------------------------- measurement */
+
+let MS = null, MS_ID = null;
+const HYP_BADGE = {
+  pass: ["b-ok", "pass"], fail: ["b-bad", "fail"], on_track: ["b-ok", "on track"],
+  off_track: ["b-warn", "off track"], waiting: ["b-dim", "waiting"],
+  pending: ["b-info", "at the verdict"], not_testable: ["b-dim", "not testable"],
+};
+const STATUS_BADGE = {upcoming: ["b-info", "upcoming"], open: ["b-ok", "running"],
+  closed: ["b-warn", "closed · verdict due"], judged: ["b-dim", "judged"]};
+function badge(map, key){
+  const [cls, label] = map[key] || ["b-dim", key || "?"];
+  return h("span", {class: "badge " + cls}, label);
+}
+function span(ms){
+  const m = Math.max(0, Math.round(ms / 60000));
+  const d = Math.floor(m / 1440), hr = Math.floor(m % 1440 / 60), mi = m % 60;
+  return d ? `${d}d ${hr}h` : hr ? `${hr}h ${mi}m` : `${mi}m`;
+}
+function day(iso){
+  return new Date(iso + "T12:00:00Z").toLocaleDateString("en-GB",
+    {weekday: "short", day: "2-digit", month: "short", timeZone: "UTC"});
+}
+const RECORD_LABEL = {true_positive: "true positive", false_positive: "false positive",
+                      benign: "benign"};
+
+async function loadMeasure(id){
+  let list;
+  try{ list = await api("/api/measurements"); }
+  catch(e){ clear($("msHead")).append(h("div", {class: "badbox"}, e.message)); return; }
+  MS_ID = id && list.measurements.some(m => m.id === id) ? id : list.current;
+  const tabs = clear($("msTabs"));
+  for(const m of list.measurements){
+    tabs.append(h("button", {class: "tab" + (m.id === MS_ID ? " on" : ""),
+      title: m.title, onclick: () => { location.hash = "#measure/" + m.id; }},
+      m.id + (m.status === "open" ? " ●" : "")));
+  }
+  if(!MS_ID){ clear($("msHead")).append(h("div", {class: "card empty"},
+    "No measurement docs found under docs/measurements/.")); return; }
+  try{ MS = await api("/api/measurements/" + encodeURIComponent(MS_ID)); }
+  catch(e){ clear($("msHead")).append(h("div", {class: "badbox"}, e.message)); return; }
+  TZ = MS.timezone || TZ;
+  renderMeasure();
+}
+
+function renderMsHead(){
+  const m = MS, now = Date.now();
+  const start = new Date(m.start), end = new Date(m.end);
+  const due = m.deadline ? new Date(m.deadline) : null;
+  let line;
+  if(m.status === "upcoming") line = `Opens in ${span(start - now)} — ${when(m.start)}`;
+  else if(m.status === "open"){
+    const n = Math.floor((now - start) / 86400000) + 1;
+    const days = Math.round((end - start) / 86400000);
+    line = `Day ${n} of ${days} · closes in ${span(end - now)} — ${when(m.end)}`;
+  }else if(m.status === "closed") line = due && now < due
+    ? `Closed ${when(m.end)} · analyst verdicts count until ${when(m.deadline)} (${span(due - now)} left)`
+    : `Closed ${when(m.end)} · the verdict is due in ${m.file}`;
+  else line = `Judged — the verdict below is the record. The figures here are recomputed `
+            + `from today's files and can differ from it (later checks, later triage).`;
+  const pct = Math.min(100, Math.max(0, 100 * (now - start) / (end - start)));
+  clear($("msHead")).append(h("div", {class: "card"},
+    h("h3", null, m.title, badge(STATUS_BADGE, m.status)),
+    h("div", {class: "sub"}, `${when(m.start)} → ${when(m.end)} · ${m.file}`),
+    h("div", {class: "lead"}, line),
+    h("div", {class: "bar"}, h("i", {style: `width:${pct.toFixed(1)}%`})),
+    m.question ? h("div", {class: "note"}, m.question) : null,
+    m.scored ? null : h("div", {class: "note"},
+      "This measurement is not about exposure alerts, so the console shows its "
+      + "hypotheses only; its figures come from its own scripts.")));
+}
+
+function renderMeasure(){
+  const m = MS;
+  renderMsHead();
+  const results = m.results || {};
+  const hyp = clear($("msHyp"));
+  for(const x of m.hypotheses){
+    const r = results[x.id];
+    const extra = [];
+    if(x.id === "H1" && r && r.alerts){
+      extra.push(h("div", {class: "note"},
+        `analyst verdicts: ${r.by_analyst} of ${r.alerts} · filled in by the verifier: ${r.filled_in}`));
+      if(r.filled_in) extra.push(h("div", {class: "warnbox", style: "margin:8px 0 0"},
+        "The verifier is the same check that now gates delivery, so its stand-in "
+        + "mostly grades itself. Your verdicts are the independent evidence — open "
+        + "each alert below and record one."));
+    }
+    if(x.id === "H2" && r && r.days_over && r.days_over.length) extra.push(
+      h("div", {class: "note"}, `over ${r.cap}: ${r.days_over.map(day).join(", ")} `
+        + `(${r.allowed_over} allowed)`));
+    if(x.id === "H3" && r) extra.push(h("div", {class: "note mono"},
+      r.corpus + (r.files.length ? " · " + r.files.join(", ") : "")));
+    if(x.id === "H4" && r && r.restarts.length) extra.push(
+      h("div", {class: "note mono"}, r.restarts.join(" · ")));
+    hyp.append(h("div", {class: "card hyp"},
+      h("h3", null, x.id, r ? badge(HYP_BADGE, r.state) : h("span", {class: "badge b-dim"}, "—")),
+      r ? h("div", {class: "figure"}, r.figure) : null,
+      h("div", {class: "rule"}, x.text), ...extra));
+  }
+  for(const id of ["msDaysBox", "msAlertsBox", "msHeldBox", "msOpenBox"])
+    $(id).hidden = !m.scored;
+  $("msHeldBox").hidden = !m.scored || !m.hypotheses.some(x => x.id === "H5");
+  $("msVerdictBox").hidden = !m.verdict;
+  if(m.verdict) clear($("msVerdict")).append(h("pre", {class: "box",
+    style: "max-height:520px"}, m.verdict));
+  if(!m.scored) return;
+
+  clear($("msDays")).append(h("table", null,
+    h("thead", null, h("tr", null, h("th", null, "Day"),
+      ...["exposure alerts", "withheld", "checked first", "downloads"].map(t =>
+        h("th", {class: "num"}, t)))),
+    h("tbody", null, m.per_day.map(d => h("tr", {class: d.elapsed ? null : "future"},
+      h("td", null, day(d.date)),
+      h("td", {class: "num" + (d.exposure_alerts > 3 ? " over" : "")}, nf(d.exposure_alerts)),
+      h("td", {class: "num"}, nf(d.withheld)), h("td", {class: "num"}, nf(d.checks)),
+      h("td", {class: "num"}, nf(d.downloads)))))));
+  const checks = Object.entries(m.pre_checks || {});
+  if(checks.length) $("msDays").append(h("div", {class: "note"},
+    "checks before delivery: " + checks.map(([k, n]) => `${k} ${n}`).join(" · ")));
+
+  const box = clear($("msAlerts"));
+  if(!m.alerts.length) box.append(h("div", {class: "empty"},
+    m.status === "upcoming" ? "The window has not opened yet." : "No exposure alert in the window yet."));
+  else box.append(h("table", null,
+    h("thead", null, h("tr", null, ["When", "Severity", "What", "Verifier now",
+      "Analyst", "Verdict of record"].map(t => h("th", null, t)))),
+    h("tbody", null, m.alerts.map(a => {
+      const v = Object.values(a.verifier);
+      const tally = {};
+      for(const x of v) tally[x || "not checked"] = (tally[x || "not checked"] || 0) + 1;
+      return h("tr", {class: "q", onclick: () => { location.hash = "#alert/" + encodeURIComponent(a.id); }},
+        h("td", {class: "mono", style: "white-space:nowrap"}, when(a.timestamp)),
+        h("td", null, sevBadge(a.severity, a.severity_score)),
+        h("td", {class: "title"}, a.title),
+        h("td", null, Object.entries(tally).map(([k, n]) =>
+          h("div", null, verifyBadge({verdict: k === "not checked" ? null : k}),
+            n > 1 ? ` ×${n}` : ""))),
+        h("td", null, a.analyst ? RECORD_LABEL[a.analyst] || a.analyst
+          : h("span", {class: "badge b-warn"}, "untriaged")),
+        h("td", null, a.of_record
+          ? h("span", {class: "badge " + (a.of_record === "false_positive" ? "b-bad" : "b-ok")},
+              RECORD_LABEL[a.of_record] || a.of_record)
+          : h("span", {class: "badge b-dim"}, "untriaged"),
+          a.filled_in ? h("div", {class: "who"}, "stand-in (verifier)") : null));
+    }))));
+
+  const held = clear($("msHeld"));
+  if(!m.withheld.length) held.append(h("div", {class: "empty"},
+    "Nothing withheld. An exposure is withheld when the check before delivery finds "
+    + "an ordinary web page at its URL."));
+  else held.append(h("table", null,
+    h("thead", null, h("tr", null, ["First seen", "Exposure", "Kind", "Downloads",
+      "Clients", "Sizes", "What the check saw"].map(t => h("th", null, t)))),
+    h("tbody", null, m.withheld.map(w => h("tr", null,
+      h("td", {class: "mono", style: "white-space:nowrap"}, when(w.first)),
+      h("td", {class: "mono title"}, w.key), h("td", null, w.kind),
+      h("td", {class: "num"}, nf(w.downloads)), h("td", {class: "num"}, nf(w.clients)),
+      h("td", {class: "mono"}, w.sizes.join(", ")),
+      h("td", {class: "who"}, (w.check && w.check.summary) || "–"))))));
+
+  const open = clear($("msOpen"));
+  if(!m.open_exposures.length) open.append(h("div", {class: "empty"}, "Nothing known to be exposed."));
+  else{
+    open.append(h("table", null,
+      h("thead", null, h("tr", null, ["Severity", "URL", "Kind", "Content", "Checked",
+        "First alerted", "Downloaders"].map(t => h("th", null, t)))),
+      h("tbody", null, m.open_exposures.map(o => h("tr", null,
+        h("td", null, sevBadge(o.severity)),
+        h("td", {class: "mono title"}, o.url || o.key), h("td", null, o.kind),
+        h("td", null, verifyBadge({verdict: o.verdict}), " ", h("span", {class: "who"}, o.signature || "")),
+        h("td", {class: "mono", style: "white-space:nowrap"}, when(o.checked_at)),
+        h("td", {class: "mono", style: "white-space:nowrap"},
+          o.first_alerted ? when(o.first_alerted) : "not alerted (low)"),
+        h("td", {class: "num"}, nf(o.downloaders)))))));
+    open.append(h("div", {class: "note"}, "Only the site's owner can fix these: remove "
+      + "the file or deny the path, and for secrets change what it disclosed. "
+      + "Re-check an alert's exposure from its page to see it go."));
+  }
+}
+
 /* -------------------------------------------------------------- routing */
 
 let VIEW = "queue";
 function route(){
   const hash = location.hash || "#queue/incidents";
   const [kind, arg] = hash.slice(1).split("/");
-  const ops = kind === "ops";
-  $("viewAlerts").hidden = ops; $("viewOps").hidden = !ops;
-  $("navAlerts").className = "tab" + (ops ? "" : " on");
+  const ops = kind === "ops", measure = kind === "measure";
+  $("viewAlerts").hidden = ops || measure; $("viewOps").hidden = !ops;
+  $("viewMeasure").hidden = !measure;
+  $("navAlerts").className = "tab" + (ops || measure ? "" : " on");
   $("navOps").className = "tab" + (ops ? " on" : "");
+  $("navMeasure").className = "tab" + (measure ? " on" : "");
   if(ops){ VIEW = "ops"; refreshOps(); return; }
+  if(measure){
+    VIEW = "measure";
+    loadMeasure(arg ? decodeURIComponent(arg) : null);
+    return;
+  }
   if(kind === "alert" && arg){
     VIEW = "detail";
     $("queueBox").hidden = true; $("detail").hidden = false;
@@ -1049,7 +1260,11 @@ setInterval(() => {
   refresh();
   // The queue refreshes itself; an open alert does not, so a half-written
   // note is never wiped by a poll.
-  if(VIEW === "queue" && ++TICK % 5 === 0) loadQueue();
+  ++TICK;
+  if(VIEW === "queue" && TICK % 5 === 0) loadQueue();
+  if(VIEW === "measure" && MS){
+    if(TICK % 10 === 0) loadMeasure(MS_ID); else renderMsHead();
+  }
 }, 3000);
 </script>
 </body>

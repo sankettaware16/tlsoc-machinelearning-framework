@@ -118,6 +118,16 @@ class _Handler(BaseHTTPRequestHandler):
                     self._error(404, "no such alert")
                     return
                 self._json(detail)
+            elif route == "/api/measurements":
+                self._json(state.measurements.list())
+            elif route.startswith("/api/measurements/"):
+                mid = route[len("/api/measurements/"):]
+                card = state._cached(f"measurement:{mid}",
+                                     lambda: state.measurements.scorecard(mid))
+                if card is None:
+                    self._error(404, "no such measurement")
+                    return
+                self._json(card)
             elif route == "/api/health":
                 self._json({"ok": True, "requires_token": bool(
                     self.server.token),  # type: ignore[attr-defined]
