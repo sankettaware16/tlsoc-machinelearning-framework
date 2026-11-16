@@ -113,9 +113,12 @@ usecases:
 
 # --------------------------------------------------------------------------- #
 # Sensitive-file exposure (web_recon, D-040) — policy only.
-#   verify_domains: the console verifies an exposure by fetching it once, and
-#                   only from sites under these suffixes (the site name comes
-#                   from the client's Host header, so never leave this open).
+#   verify_domains: an exposure is verified by fetching it once, and only from
+#                   sites under these suffixes (the site name comes from the
+#                   client's Host header, so never leave this open). The live
+#                   runtime checks each new exposure before alerting and holds
+#                   back one that is an ordinary web page now (D-042); the
+#                   console checks the rest. Empty: no fetching at all.
 #   allow:          exposures a site serves on purpose, as "site|root"
 #                   patterns ("*" wildcards), e.g. "www.example.edu|/backup.zip".
 # --------------------------------------------------------------------------- #

@@ -294,10 +294,15 @@ class ExposureTracker:
     def key(domain: str | None, root: str) -> str:
         return f"{(domain or '_').lower()}|{root}"
 
+    def is_open(self, key: str, now: datetime) -> bool:
+        """Would ``decide`` fold this download? (No state changes.)"""
+        known = self._open.get(key)
+        return known is not None and now - known[1] < REALERT_AFTER
+
     def decide(self, key: str, alert_id: str, now: datetime, client: str) -> tuple[str, str]:
         """("deliver", alert_id) for a new or re-opened exposure, else ("fold", into)."""
         known = self._open.get(key)
-        if known is not None and now - known[1] < REALERT_AFTER:
+        if self.is_open(key, now):
             known[2] += 1
             if client not in known[3] and len(known[3]) < 256:
                 known[3].append(client)

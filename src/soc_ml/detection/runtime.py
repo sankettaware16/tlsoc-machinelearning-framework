@@ -44,7 +44,8 @@ import os
 import random
 import signal
 import time
-from datetime import UTC, datetime, tzinfo
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -63,7 +64,7 @@ from soc_ml.core.plugins import (
 from soc_ml.detection.annotations import EntityAnnotations
 from soc_ml.detection.budget import AlertBudget, BudgetDecision
 from soc_ml.detection.dedup import AlertDeduplicator
-from soc_ml.detection.scorer import Scorer
+from soc_ml.detection.scorer import Scorer, set_exposure_severity
 from soc_ml.drift.psi import DriftReport, population_stability_index
 from soc_ml.features.exposure import ExposureTracker
 from soc_ml.features.window_features import WindowFeatureBuilder
@@ -79,6 +80,17 @@ _DRIFT_RESERVOIR = 4000  # live feature values retained per feature for PSI
 _ADDRESS_MEMORY_EVERY_S = 600.0  # persist address memory (MBs) far less often than offsets
 #: Top of the "low" band (SPEC_DIGEST §7): where a scan that exposed nothing sits.
 _SCANNER_CEILING = 44
+#: Exposure kinds whose real content is an HTML page (status, trace, phpinfo):
+#: "an ordinary web page now" is no evidence of a catch-all for them.
+_HTML_BY_NATURE = frozenset({"debug"})
+#: Fetches per alert before the rest deliver unchecked: a check can take 16 s
+#: (two schemes, 8 s each) and the runtime waits for it.
+_MAX_CHECKS_PER_ALERT = 4
+#: A key found to be the site's page is not fetched again for this long; its
+#: later downloads are recorded under that verdict. Delivery horizon, like
+#: REALERT_AFTER, not a data threshold.
+_RECHECK_UNREPRODUCIBLE = timedelta(days=1)
+_MAX_UNREPRODUCIBLE_KEYS = 10_000
 
 
 def resolve_timezone(name: str | None) -> tzinfo:
@@ -124,6 +136,7 @@ class RuntimeConfig:
         modes: dict[str, str] | None = None,
         timezone_name: str = "UTC",
         exposure_allow: tuple[str, ...] = (),
+        exposure_verify: Callable[[str | None, str, str], dict] | None = None,
     ) -> None:
         self.usecases = (usecases,) if isinstance(usecases, str) else tuple(usecases)
         self.input_dir = Path(input_dir)
@@ -148,6 +161,10 @@ class RuntimeConfig:
         #: Exposures the operator serves on purpose (config ``exposure.allow``):
         #: ``site|root`` patterns with ``*`` wildcards. Policy, not a threshold.
         self.exposure_allow = tuple(exposure_allow)
+        #: (domain, root, kind) -> verification record: fetches a new exposure
+        #: once before it is alerted (D-042). None in replays and tests: the
+        #: site's content now says nothing about a download in the past.
+        self.exposure_verify = exposure_verify
 
     def mode_for(self, slug: str) -> str:
         return self.modes.get(slug, self.mode)
@@ -189,6 +206,8 @@ class _UseCaseRunner:
         self.progression = Progression(tz=tz) if uc_cls.progressive else None
         self.exposures = ExposureTracker()
         self.exposures_fh = None
+        #: key -> (checked at, verification) for exposures found to be a page.
+        self.unreproducible: dict[str, tuple[datetime, dict]] = {}
         self.budget = AlertBudget(
             daily_budget_override
             if daily_budget_override is not None
@@ -226,6 +245,7 @@ class _UseCaseRunner:
             "exposure_alerts": 0,
             "exposure_downloads": 0,
             "exposure_downloads_folded": 0,
+            "exposures_not_reproducible": 0,
             "last_drift_band": "unknown",
         }
 
@@ -560,15 +580,26 @@ class DetectionRuntime:
 
         Not capped by the daily budget: an exposure is rare and is the alert
         the budget exists to protect (D-034). A kind that is not alert-worthy
-        (development metadata) is recorded and digested.
+        (development metadata) is recorded and digested, and so is a new
+        exposure whose URL is an ordinary web page when fetched (D-042).
         """
         exposures = alert.links.get("exposures") or []
         new: list[str] = []
+        withheld: list[str] = []
         into: str | None = None
+        fetches = 0
         for exp in exposures:
             if not exp.get("alertable", True):
                 exp["new"] = False
                 continue
+            if not runner.exposures.is_open(exp["key"], alert.timestamp):
+                held, fetched = self._is_a_page(runner, alert, exp,
+                                                may_fetch=fetches < _MAX_CHECKS_PER_ALERT)
+                fetches += fetched
+                if held:
+                    exp["new"] = False
+                    withheld.append(exp["key"])
+                    continue
             action, alert_id = runner.exposures.decide(
                 exp["key"], alert.id, alert.timestamp, alert.entity.ip)
             exp["new"] = action == "deliver"
@@ -580,8 +611,13 @@ class DetectionRuntime:
         for exp in exposures:
             self._exposure_record(runner, alert, exp, exp.get("alert_id") or alert.id)
         runner.stats["exposure_downloads"] += len(exposures)
-        detail = {"exposures": [e["key"] for e in exposures], "budget": "bypassed: exposure"}
+        runner.stats["exposures_not_reproducible"] += len(withheld)
+        detail = {"exposures": [e["key"] for e in exposures], "budget": "bypassed: exposure",
+                  **({"not_reproducible": withheld} if withheld else {})}
         if new:
+            if withheld:
+                # A page is not what was exposed: severity from the rest.
+                set_exposure_severity(alert, [e for e in exposures if e["key"] not in withheld])
             runner.sink.emit_alert(alert)
             runner.stats["alerts_delivered"] += 1
             runner.stats["exposure_alerts"] += 1
@@ -593,10 +629,59 @@ class DetectionRuntime:
             self.stats["alerts_folded"] += 1
             return "folded", {**detail, "folded_by": "exposure", "folded_into": into,
                               "into_finding": True}
+        if withheld:
+            self._digest(runner, alert, reason="exposure not reproducible: the URL is an "
+                                               "ordinary web page now — recorded only")
+            runner.stats["alerts_digested"] += 1
+            self.stats["alerts_digested"] += 1
+            return "digested", {**detail, "digest_reason": "exposure_not_reproducible"}
         self._digest(runner, alert, reason="exposure of a low-impact kind — recorded only")
         runner.stats["alerts_digested"] += 1
         self.stats["alerts_digested"] += 1
         return "digested", {**detail, "digest_reason": "exposure_low"}
+
+    def _is_a_page(self, runner: _UseCaseRunner, alert, exp: dict, *,
+                   may_fetch: bool) -> tuple[bool, bool]:
+        """(withhold, fetched): is this new exposure the site's page, by its content?
+
+        The size rules see only what the log shows. A page that differs per
+        path without echoing it in proportion (a search route printing the
+        term, a second app's shell under ``/beta/``) passes them: prod, 7-14
+        Nov, two of seven exposure alerts, each found to be a page by the
+        console's verifier two minutes after delivery (M-003b). The same
+        check runs here first. Only "an ordinary web page now" withholds;
+        a failed check, a refusal, a 404 now, or a kind whose real content
+        is HTML delivers as before.
+        """
+        verify = self.cfg.exposure_verify
+        if verify is None or exp["kind"] in _HTML_BY_NATURE:
+            return False, False
+        cached = runner.unreproducible.get(exp["key"])
+        if cached is not None and alert.timestamp - cached[0] < _RECHECK_UNREPRODUCIBLE:
+            exp["verification"] = cached[1]
+            return True, False
+        if not may_fetch:
+            return False, False
+        try:
+            result = verify(exp.get("domain"), exp["root"], exp["kind"])
+        except Exception as exc:  # a broken check must never withhold an alert
+            result = {"verdict": "unreachable", "detail": f"{type(exc).__name__}: {exc}"}
+        page = result.get("verdict") == "not_reproducible"
+        # The console reads this file and does not check a key twice. A
+        # withheld exposure has no alert for the SIEM to update: its trail is
+        # the download record, which carries the verdict.
+        path = self.state_dir / f"{runner.slug}_verifications.ndjson"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"alert_id": None if page else alert.id, "key": exp["key"],
+                                 **result, "by": "runtime"}) + "\n")
+        exp["verification"] = {k: result[k] for k in
+                               ("verdict", "checked_at", "signature", "summary") if result.get(k)}
+        if not page:
+            return False, True
+        if len(runner.unreproducible) >= _MAX_UNREPRODUCIBLE_KEYS:
+            del runner.unreproducible[next(iter(runner.unreproducible))]
+        runner.unreproducible[exp["key"]] = (alert.timestamp, exp["verification"])
+        return True, True
 
     def _exposure_record(self, runner: _UseCaseRunner, alert, exp: dict,
                          alert_id: str) -> None:
@@ -616,6 +701,7 @@ class DetectionRuntime:
             "alert_id": alert_id, "new": exp.get("new", False),
             "model_fired": alert.links.get("model_fired"),
             "fused_pct": round(alert.confidence, 4),
+            **({"verdict": exp["verification"]["verdict"]} if exp.get("verification") else {}),
         }) + "\n")
 
     def _digest(self, runner: _UseCaseRunner, alert,

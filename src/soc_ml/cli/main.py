@@ -561,6 +561,16 @@ def cmd_run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
+    exposure = ((cfg.raw.get("exposure") if cfg is not None else None) or {})
+    domains = tuple(str(d) for d in exposure.get("verify_domains") or () if d)
+    verify = None
+    if domains and not args.once:
+        # A live tail only: a replay's downloads are in the past, and the
+        # site's content now says nothing about them (D-042).
+        import functools
+
+        from soc_ml.features.exposure import verify as fetch_and_check
+        verify = functools.partial(fetch_and_check, allowed_domains=domains)
     rc = RuntimeConfig(
         usecases=slugs,
         input_dir=input_dir,
@@ -572,8 +582,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         daily_alert_budget=args.daily_budget,
         modes=modes,
         timezone_name=tz_name,
-        exposure_allow=tuple(((cfg.raw.get("exposure") or {}).get("allow") or ())
-                             if cfg is not None else ()),
+        exposure_allow=tuple(exposure.get("allow") or ()),
+        exposure_verify=verify,
     )
     try:
         # Timestamped lines: a traceback in runtime.log can then be placed in
