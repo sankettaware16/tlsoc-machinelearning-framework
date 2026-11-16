@@ -112,6 +112,22 @@ informational: exposure alerts per day by kind and severity; checks made
 
 *Recorded as they happen, before the window closes.*
 
+- **2026-11-16 14:31 IST, before the window: build bdcff4a deployed** (D-042).
+  Clean SIGTERM drain (16 s), started with the launch command at 14:31:18,
+  resumed from the checkpoint with the open exposures, same bundles. No
+  watchdog line. The window therefore opens 2026-11-17 00:00 IST.
+- **Wiring checked on prod, 14:40 IST**, with the runtime's `run` stubbed (a
+  scratch output directory, nothing delivered): the launch command builds the
+  check from `config/site.local.yaml`; a known catch-all `.env` reads
+  not_reproducible, a confirmed `web.config` confirmed, a domain outside
+  `verify_domains` is refused, and `--once` builds no check.
+- **2026-11-16, before the window: the console gains a Measurement view**
+  (`#measure`), which reads this doc and counts H1, H2, H4 and the withheld
+  exposures live by its rules. A console change: nothing it does decides what
+  is delivered. Checked against M-003b's files, it gives that week's figures
+  (0/1/0/0/5/0/1 per day, 5 of 7 correct). Its counts are a view; the verdict
+  is still computed and written here after the window.
+
 ## Verdict
 
 *(appended after the window closes)*
