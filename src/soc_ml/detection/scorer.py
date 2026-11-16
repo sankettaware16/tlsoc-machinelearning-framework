@@ -203,10 +203,12 @@ class Scorer:
             return
         kind, reason = decision
         alert = out.alert
-        if kind == "suppress" and alert.links.get("exposures"):
+        if alert.links.get("exposures"):
             # An exposure means the file is public, whoever fetched it: a
             # verified crawler getting /.env back is an exposure, not a
-            # false positive (review 2026-10-22). Recorded, never silent.
+            # false positive (review 2026-10-22), and its severity is the
+            # kind's (D-040) — prod, 8 Nov: a known-crawler down-weight
+            # delivered a new web.config as low. Recorded, never silent.
             alert.links["suppression_overridden"] = f"finding overrides: {reason}"
             return
         if kind == "suppress":
@@ -312,14 +314,10 @@ class Scorer:
     def _make_exposure(self, alert: Alert, exposures: list[dict], evidence: dict,
                        *, fired: bool) -> None:
         """Turn an alert into an exposure alert: kind-set severity, plain narrative."""
-        kinds = [KINDS[e["kind"]] for e in exposures if e["kind"] in KINDS]
-        worst = max(kinds, key=lambda k: _KIND_SCORE[k.severity]) if kinds else None
-        if worst is not None:
-            # Severity is what was exposed, not how odd the traffic looked: a
-            # scanner that trips the models while fetching a stock web.config
-            # has exposed a config file, not a critical incident.
-            alert.severity_score = _KIND_SCORE[worst.severity]
-            alert.severity = worst.severity
+        # Severity is what was exposed, not how odd the traffic looked: a
+        # scanner that trips the models while fetching a stock web.config
+        # has exposed a config file, not a critical incident.
+        set_exposure_severity(alert, exposures)
         alert.links["category"] = "exposure"
         alert.links["rule_name"] = f"{self.usecase_cls.title}: sensitive file exposure"
         alert.links["exposures"] = [
@@ -339,6 +337,15 @@ class Scorer:
 #: Severity score an exposure kind sets — the top of each band but critical.
 _KIND_SCORE = {Severity.CRITICAL: 95, Severity.HIGH: 85, Severity.MEDIUM: 60,
                Severity.LOW: 30}
+
+
+def set_exposure_severity(alert: Alert, exposures: list[dict]) -> None:
+    """The worst exposed kind sets the alert's severity; no known kind, no change."""
+    kinds = [KINDS[e["kind"]] for e in exposures if e["kind"] in KINDS]
+    if kinds:
+        worst = max(kinds, key=lambda k: _KIND_SCORE[k.severity])
+        alert.severity_score = _KIND_SCORE[worst.severity]
+        alert.severity = worst.severity
 
 
 def _context(evidence: dict[str, Any]) -> dict[str, Any]:

@@ -15,6 +15,8 @@ from datetime import timedelta
 from email.message import Message
 from pathlib import Path
 
+import pytest
+
 from soc_ml.core.contracts import Event, Observer
 from soc_ml.core.plugins import usecase_model_factories
 from soc_ml.features.exposure import ExposureTracker, classify, verify
@@ -215,6 +217,116 @@ def test_an_exposure_is_alerted_by_one_use_case_only(tmp_path: Path) -> None:
 def test_an_allowed_exposure_is_not_alerted(tmp_path: Path) -> None:
     _run(tmp_path, [_ev("/.htaccess", size=8024)], exposure_allow=(f"{SITE}|/.htaccess",))
     assert _rows(tmp_path / "alerts" / "web_recon.ndjson") == []
+
+
+def _verifier(verdicts: dict[str, str]):
+    """A stand-in for the live fetch: a verdict per root, "confirmed" otherwise."""
+    calls: list[str] = []
+
+    def check(domain, root, kind):
+        calls.append(root)
+        if verdicts.get(root) == "raises":
+            raise OSError("network is unreachable")
+        return {"checked_at": "2026-11-10T22:02:29+00:00", "domain": domain, "root": root,
+                "kind": kind, "verdict": verdicts.get(root, "confirmed")}
+    return check, calls
+
+
+def test_a_page_the_size_rules_cannot_see_is_held_back_by_its_content(
+        tmp_path: Path) -> None:
+    """prod, 10 Nov: an SPA answered forty probes with its 3,929-byte shell
+    and /beta/.env alone with 4,103 bytes, a second app's page. Delivered as
+    critical; the verifier found HTML two minutes later (M-003b)."""
+    check, calls = _verifier({"/beta/.env": "not_reproducible"})
+    rt = _run(tmp_path, [_ev("/beta/.env", size=4103)], exposure_verify=check)
+    assert _rows(tmp_path / "alerts" / "web_recon.ndjson") == []
+    assert calls == ["/beta/.env"]
+    rows = _rows(tmp_path / "state" / "web_recon_exposures.ndjson")
+    assert len(rows) == 1 and rows[0]["new"] is False
+    assert rows[0]["verdict"] == "not_reproducible", "recorded, with the reason"
+    checks = _rows(tmp_path / "state" / "web_recon_verifications.ndjson")
+    assert checks[0]["key"] == f"{SITE}|/beta/.env" and checks[0]["by"] == "runtime"
+    assert checks[0]["alert_id"] is None, "no alert for the SIEM shipper to update"
+    digest = _rows(tmp_path / "state" / "web_recon_digest.ndjson")
+    assert any("not reproducible" in d["reason"] for d in digest)
+    assert rt.runners[0].stats["exposures_not_reproducible"] == 1
+
+
+def test_a_confirmed_exposure_is_delivered_with_its_verdict(tmp_path: Path) -> None:
+    check, calls = _verifier({})
+    _run(tmp_path, [_ev("/.env", size=913)], exposure_verify=check)
+    [doc] = _rows(tmp_path / "alerts" / "web_recon.ndjson")
+    assert doc["alert"]["severity"] == "critical"
+    assert doc["exposure"][0]["verification"]["verdict"] == "confirmed"
+    [row] = _rows(tmp_path / "state" / "web_recon_verifications.ndjson")
+    assert row["alert_id"] == doc["alert"]["id"], "the console will not check it again"
+
+
+@pytest.mark.parametrize("verdict", ["likely", "blocked_now", "redirected", "unreachable",
+                                     "refused", "raises"])
+def test_only_an_ordinary_page_withholds_an_exposure(tmp_path: Path, verdict: str) -> None:
+    """A 404 now may be the fix after the download; a failed check is no
+    evidence. Either way the download happened: it is alerted."""
+    check, _ = _verifier({"/.env": verdict})
+    _run(tmp_path, [_ev("/.env", size=913)], exposure_verify=check)
+    assert len(_rows(tmp_path / "alerts" / "web_recon.ndjson")) == 1
+
+
+def test_a_status_page_is_alerted_although_it_is_html(tmp_path: Path) -> None:
+    check, calls = _verifier({"/server-status": "not_reproducible"})
+    _run(tmp_path, [_ev("/server-status", size=8565)], exposure_verify=check)
+    assert len(_rows(tmp_path / "alerts" / "web_recon.ndjson")) == 1
+    assert calls == [], "HTML is what a real one looks like: nothing to check against"
+
+
+def test_each_exposure_is_fetched_once_however_many_download_it(tmp_path: Path) -> None:
+    page, page_calls = _verifier({"/beta/.env": "not_reproducible"})
+    _run(tmp_path / "page", [_ev("/beta/.env", ip=f"203.0.113.{10 + i}", size=4103,
+                                 seconds=600 * i) for i in range(3)], exposure_verify=page)
+    assert page_calls == ["/beta/.env"]
+    rows = _rows(tmp_path / "page" / "state" / "web_recon_exposures.ndjson")
+    assert len(rows) == 3 and all(r["verdict"] == "not_reproducible" for r in rows)
+    real, real_calls = _verifier({})
+    _run(tmp_path / "real", [_ev("/.htaccess", ip=f"203.0.113.{10 + i}", size=8024,
+                                 seconds=600 * i) for i in range(3)], exposure_verify=real)
+    assert real_calls == ["/.htaccess"], "later downloads fold into the alert unchecked"
+
+
+def test_a_withheld_page_does_not_set_the_severity_of_the_alert_it_rides_in(
+        tmp_path: Path) -> None:
+    check, _ = _verifier({"/beta/.env": "not_reproducible"})
+    _run(tmp_path, [_ev("/.htaccess", size=8024), _ev("/beta/.env", size=4103, seconds=1)],
+         exposure_verify=check)
+    [doc] = _rows(tmp_path / "alerts" / "web_recon.ndjson")
+    assert {e["key"]: e["new"] for e in doc["exposure"]} == {
+        f"{SITE}|/.htaccess": True, f"{SITE}|/beta/.env": False}
+    assert doc["alert"]["severity"] == "medium", "a web.config-class exposure, not a secret"
+
+
+def test_a_crawler_down_weight_does_not_lower_an_exposure() -> None:
+    """prod, 8 Nov: a scanner the bot model put in a known-crawler cluster
+    got a site's web.config back, and the new exposure was delivered as low."""
+    from types import SimpleNamespace
+
+    from soc_ml.baseline.profile import EnvironmentProfile
+    from soc_ml.core.contracts import Severity
+    from soc_ml.detection.scorer import Scorer
+    from soc_ml.usecases import WebRecon
+    from tests.test_detection_lifecycle import alert as make_alert
+    scorer = Scorer.__new__(Scorer)
+    scorer.usecase = WebRecon(EnvironmentProfile())
+    ann = {"crawler.is_verified": False, "crawler.is_known": True, "crawler.robots_txt": True,
+           "crawler.human_likeness": 0.93, "source": "bot_detection"}
+    found = make_alert()
+    found.severity, found.severity_score = Severity.MEDIUM, 60
+    found.links["exposures"] = [{"key": "web01|/web.config", "kind": "server_config"}]
+    scorer._apply_suppression(SimpleNamespace(evidence={"entity_annotations": ann}, alert=found))
+    assert (found.severity, found.severity_score) == (Severity.MEDIUM, 60)
+    assert "downweighted_by" not in found.links and found.links["suppression_overridden"]
+    plain = make_alert()
+    scorer._apply_suppression(SimpleNamespace(evidence={"entity_annotations": ann}, alert=plain))
+    assert plain.links["downweighted_by"] and plain.severity_score == 55, (
+        "without an exposure the crawler is down-weighted as before")
 
 
 def test_the_tracker_survives_a_restart() -> None:

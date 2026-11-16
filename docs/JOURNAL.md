@@ -10,6 +10,69 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-11-16 — M-003b: two pages no size rule can see; the content check moves before delivery
+
+### D-042 · Fetch a new exposure once before alerting it; hold back an ordinary web page
+
+**Context.** M-003b (7-14 Nov) delivered seven exposure alerts. Five were
+confirmed by content. Two, both critical `.env`, were pages: the console's
+verifier found HTML two minutes after each was delivered. The log alone
+could not have shown it:
+
+- a department SPA answered forty probes from one scanner with its 3,929-byte
+  shell, and `/beta/.env` alone with 4,103 bytes — a second build under
+  `/beta/`, whose only request that week was this one;
+- a site routes `/search/<term>` to a results page that prints the term:
+  `/search/.env` 7,868 bytes, `/search/%252eenv` 7,874,
+  `/search/label/PHP-Shells` 7,881 — not a whole number of bytes per raw
+  path character, and two answers in the directory all week.
+
+A third, after the window, is a 206: a scanner sent a Range header to a
+site that answers everything with one 936-byte page and got 501 bytes of it
+for `/sa.bak`. Size rules need repeated answers the traffic does not supply.
+The verifier's "not reproducible" (2xx, an ordinary web page now) has been
+right every time it was traced to the raw log: 13 exposures across M-003,
+M-003b and after, each a catch-all, routed or sliced page.
+
+**Decision.** In a live tail with `exposure.verify_domains` set, the runtime
+fetches a *new* exposure once, with the console's verifier (2 KB, no
+redirects, only the configured domains), before the tracker opens it. An
+ordinary web page now: recorded with that verdict, not alerted (digested;
+riding with a real exposure, it no longer sets the alert's severity). Every
+other outcome delivers as before — confirmed, likely, a 404 or redirect now
+(the fix may have come after the download), unreachable, refused, or a check
+that raised. Debug kinds are never held back: a real status or trace page is
+HTML. Later downloads of an alerted exposure are not fetched; a key found to
+be a page is not fetched again for a day; at most four fetches per alert.
+Replays (`--once`) and tests never fetch: today's content says nothing about
+a past download.
+
+**Also.** bot_detection's known-crawler down-weight no longer lowers an
+exposure: on 8 Nov a new `web.config` was delivered as low (60 − 25 = 35)
+because its scanner sat in a known-crawler cluster. Severity is the kind's
+(D-040); the finding override of 2026-10-22 covered "suppress" only.
+
+**Reverses** D-041's "rules out: fetching every candidate before delivery".
+It was ruled out as an outbound request in the detection path. It is one
+request per *new* exposure — seven in M-003b's week — to the institute's own
+domains, the request the console has made unprompted since 2 Nov.
+
+**Rules out.** Delivering the pages at low severity instead (they would
+still be exposure alerts in the incident queue); widening the echo rule
+(a results page's size is not linear in the raw path).
+
+**Risk.** A real file of a non-debug kind served as HTML would be held back
+(none seen). M-003c's H5 checks every withheld exposure independently.
+Known limit: the scanner behind a withheld page stays that day's queued
+finding for its address, so its later low alerts fold into the digest — as
+behind a metadata-only download already.
+
+**Lives in.** `detection/runtime.py` (`_is_a_page`, `_deliver_exposure`),
+`detection/scorer.py` (`set_exposure_severity`, `_apply_suppression`),
+`cli/main.py`; tests in `tests/test_exposure.py`. Measured by M-003c.
+
+---
+
 ## 2026-11-06 — Catch-all pages that echo the path; M-003 voided for M-003b
 
 ### D-041 · A page whose size moves with the path's length is a catch-all
