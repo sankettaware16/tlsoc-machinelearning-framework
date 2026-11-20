@@ -131,6 +131,8 @@ def _box(tmp_path: Path) -> tuple[Path, Path]:
                       client="203.0.113.10"),
             _download(c, D1, new=True, verdict="not_reproducible"),  # delivered, not withheld
             _download(b, D1, new=True, verdict="confirmed"),
+            # D-044: a 404 to the SOC withholds too; the verdict says which
+            _download("f.example.edu|/.env.save", D2, new=False, verdict="blocked_now"),
         )))
     (data / "state" / "runtime.log").write_text(
         "[watchdog] 2026-11-30T23:00:01+05:30 runtime not running; restarting\n"
@@ -177,12 +179,16 @@ def test_days_are_local_and_over_three_counts_against_h2(tmp_path: Path) -> None
     assert card["results"]["H2"]["state"] == "on_track"  # 7 - 5 = 2 days may go over
 
 
-def test_a_withheld_exposure_is_a_page_that_was_not_delivered(tmp_path: Path) -> None:
+def test_a_withheld_exposure_is_a_checked_download_that_opened_no_alert(tmp_path: Path) -> None:
     card = _book(tmp_path).scorecard("M-009", now=datetime(2026, 12, 5, tzinfo=UTC))
     held = card["withheld"]
-    assert [w["key"] for w in held] == ["e.example.edu|/search/.env"]
+    # A page (D-042) and a 404 to the SOC (D-044) are both withheld; a checked
+    # download that was delivered (new) is not.
+    assert [w["key"] for w in held] == ["e.example.edu|/search/.env", "f.example.edu|/.env.save"]
     assert held[0]["downloads"] == 2 and held[0]["clients"] == 2
-    assert card["results"]["H5"]["state"] == "pending"
+    assert held[1]["check"]["verdict"] is None, "no check record for it in this box"
+    assert card["results"]["H5"]["state"] == "pending" and card["results"]["H5"]["withheld"] == 2
+    assert [d["withheld"] for d in card["per_day"]] == [1, 1, 0]
     assert card["pre_checks"] == {"not_reproducible": 1, "unreachable": 1}
 
 
@@ -199,6 +205,26 @@ def test_still_exposed_means_the_latest_check_found_it(tmp_path: Path) -> None:
     keys = {o["key"] for o in card["open_exposures"]}
     # b's latest check is blocked_now; c is a page; d unreachable.
     assert keys == {"a.example.edu|/.env"}
+
+
+def test_without_a_stand_in_h1_needs_every_alert_judged(tmp_path: Path) -> None:
+    """M-003d: from D-044 on every delivered exposure is one the verifier
+    passed, so the verifier cannot stand in for the analyst; an alert without
+    an analyst verdict at the deadline makes H1 not testable, never a pass."""
+    repo, data = _box(tmp_path)
+    doc = _DOC.replace("the verifier's latest per exposure key stands in —",
+                       "nothing stands in for it; an alert without one is unjudged —")
+    (repo / "docs" / "measurements" / "M-009-test.md").write_text(doc)
+    book = DashboardState(data, repo_root=repo).measurements
+    before = book.scorecard("M-009", now=datetime(2026, 12, 2, tzinfo=UTC))["results"]["H1"]
+    assert before["filled_in"] == 0 and before["judged"] == 1, "the analyst's one verdict only"
+    assert before["state"] == "off_track" and before["stand_in"] is False  # 0/1 correct
+    after = book.scorecard("M-009", now=datetime(2026, 12, 10, tzinfo=UTC))["results"]["H1"]
+    assert after["state"] == "not_testable" and after["untriaged"] == 7
+    assert "analyst's verdict by the deadline" in after["figure"]
+    # The same box under M-003c's rule fills in from the verifier and fails.
+    assert _book(tmp_path / "standin").scorecard(
+        "M-009", now=datetime(2026, 12, 10, tzinfo=UTC))["results"]["H1"]["state"] == "fail"
 
 
 def test_the_routes_serve_the_scorecard(tmp_path: Path) -> None:

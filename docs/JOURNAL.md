@@ -10,6 +10,79 @@ Format: date · decision · why · what it rules out · where it lives.
 
 ---
 
+## 2026-11-21 — An answer the site gives one client only; the alert claims what the SOC read
+
+### D-044 · A download the SOC cannot reproduce is not an exposure alert
+
+**Context.** A mid-window read of M-003c (day 5 of 7) found seven exposure
+alerts: five confirmed by content, two critical `.env` alerts on one site
+that are not real. A scanner carrying a well-known crawler's user-agent
+asked the site for `/.env.production` on 18 Nov and `/.env.save` on 19 Nov
+and got HTTP 200 and exactly 2,102 bytes for each; its other probes that
+day got the site's 970-byte page or 404. A browser asked for
+`/.env.production` two seconds before the second download and got 404; the
+runtime's own check got 404 four minutes after the first download and six
+after the second. D-042 delivered both: a 4xx now was read as "the fix may
+have come after the download", so `blocked_now` delivered like `confirmed`.
+Across every check made since 2 Nov — 19 confirmed, 16 not reproducible, 2
+blocked now, 1 likely — no file has ever been found removed after a
+download; both `blocked_now` verdicts were this case. Judged honestly, H1
+ends at 5 of 7 (71%).
+
+**Decision.** An exposure alert claims what the SOC itself read. The check
+before delivery withholds a new exposure when the site answers it with a
+page (D-042), a 4xx, or a redirect: recorded with the verdict, digested,
+shown in the console's withheld list, not alerted. A site the SOC cannot
+reach, a refusal to fetch (a domain outside `verify_domains`), a check that
+raised, and non-HTML content without a signature ("likely") are no evidence
+either way and deliver as before. Debug kinds are never fetched (their real
+content is HTML). Built on 21 Nov and held until M-003c closes: a delivery
+change inside the window voids it. Deploys 24 Nov 00:00 IST; measured by
+M-003d.
+
+**Reverses** the part of D-042 that delivered a 404 or a redirect now. That
+rule protected a case never observed against one now seen twice in a week,
+both critical, both wrong.
+
+**Verified.** The new test fails on the old code (both alerts delivered)
+and passes on the new (recorded with the verdict, no alert, the
+verification row carries no alert id). The console's measurement view now
+counts every checked download that opened no alert as withheld, whichever
+verdict withheld it; its own test fails on the old view.
+
+**Rules out.** Fetching again with the client's user-agent to reproduce the
+answer (a decoy served to scanners is built to look like the file, and a
+second request with a spoofed agent is not something the SOC should send);
+a size rule for "the same size for two sensitive names" (a real `.env.bak`
+is a copy of a real `.env` and has its size); delivering these at low
+instead (they would still be exposure alerts, and the analyst would still
+have to read them).
+
+**Risk.** A file really removed between the download and the check (minutes)
+is withheld, not alerted; it stays in the download record and the console's
+withheld list with the site's status, and, like a page, is not fetched again
+for a day: every later download of the key that day is recorded under the
+same verdict. A site that refuses the SOC with 403 while serving the scanner
+is withheld too — the same list. A server error (5xx) to the check is no
+evidence and delivers as unreachable; a 3xx or 4xx on https makes the check
+ask http before it withholds (an http-only site whose :443 is a redirect or
+the default vhost's 404 was the review's case). M-003d's H5 reads every
+withheld exposure in the raw log.
+
+**By the letter.** M-003c's two alerts stay untriaged until the analyst
+judges them: unjudged, its H1 reads 5 of 5 correct with 2 untriaged — the
+limit — and passes; judged, 5 of 7 and fails. The decision stands on the
+evidence either way.
+
+**Lives in.** `detection/runtime.py` (`_WITHHOLDING_VERDICTS`,
+`_not_reproducible`, `_deliver_exposure`), `features/exposure.py`
+(`VERIFY_VERDICTS` wording), `web/measurement.py` and `web/dashboard.html`
+(the withheld list); tests in `tests/test_exposure.py` and
+`tests/test_web_measurement.py`. The health counter keeps its name,
+`exposures_not_reproducible`, and now counts every withheld exposure.
+
+---
+
 ## 2026-11-16 — M-003b's H3: a busy site forgot its own home page
 
 ### D-043 · The catch-all size memory drops the least recently seen size

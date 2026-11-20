@@ -173,7 +173,7 @@ tr.future td{color:var(--dim)}
       <div id="msDays" class="card wrap"></div></section>
     <section id="msAlertsBox"><h2>Exposure alerts in the window — click one to triage it</h2>
       <div id="msAlerts" class="card wrap"></div></section>
-    <section id="msHeldBox"><h2>Withheld as an ordinary page (H5 reads each one)</h2>
+    <section id="msHeldBox"><h2>Withheld — the SOC could not reproduce the download (H5 reads each one)</h2>
       <div id="msHeld" class="card wrap"></div></section>
     <section id="msOpenBox"><h2>Still exposed — the latest check found it served</h2>
       <div id="msOpen" class="card wrap"></div></section>
@@ -733,8 +733,8 @@ function sevBadge(sev, score){
 }
 const VERIFY_BADGE = {
   confirmed: ["b-bad", "confirmed exposed"], likely: ["b-warn", "likely exposed"],
-  not_reproducible: ["b-ok", "not reproducible"], blocked_now: ["b-ok", "blocked now"],
-  redirected: ["b-dim", "redirected"], unreachable: ["b-dim", "unreachable"],
+  not_reproducible: ["b-ok", "not reproducible"], blocked_now: ["b-ok", "not readable (4xx)"],
+  redirected: ["b-ok", "not readable (redirect)"], unreachable: ["b-dim", "unreachable"],
   refused: ["b-dim", "not checked"],
 };
 function verifyBadge(v){
@@ -876,7 +876,7 @@ function renderDetail(d){
         h("div", {class: "row"}, h("b", null, e.title || e.kind),
           h("span", {class: "mono who"}, `${e.domain}${e.root}`), verifyBadge(v)),
         v ? h("div", {class: v.verdict === "confirmed" || v.verdict === "likely" ? "badbox"
-                       : v.verdict === "not_reproducible" || v.verdict === "blocked_now" ? "okbox"
+                       : ["not_reproducible", "blocked_now", "redirected"].includes(v.verdict) ? "okbox"
                        : "warnbox", style: "margin:8px 0"},
               h("div", null, v.summary || v.verdict),
               h("div", {class: "who"}, [v.signature && ("signature: " + v.signature),
@@ -1164,8 +1164,8 @@ function renderMeasure(){
 
   const held = clear($("msHeld"));
   if(!m.withheld.length) held.append(h("div", {class: "empty"},
-    "Nothing withheld. An exposure is withheld when the check before delivery finds "
-    + "an ordinary web page at its URL."));
+    "Nothing withheld. An exposure is withheld when the check before delivery cannot "
+    + "reproduce the download: an ordinary web page, a 4xx or a redirect at its URL."));
   else held.append(h("table", null,
     h("thead", null, h("tr", null, ["First seen", "Exposure", "Kind", "Downloads",
       "Clients", "Sizes", "What the check saw"].map(t => h("th", null, t)))),

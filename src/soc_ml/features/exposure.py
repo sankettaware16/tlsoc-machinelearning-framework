@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import socket
 import ssl
 import urllib.error
 import urllib.request
@@ -336,9 +335,10 @@ VERIFY_VERDICTS = {
               "matched.",
     "not_reproducible": "Not reproducible: the URL returns an ordinary web page, so "
                         "the logged success was probably the site's catch-all page.",
-    "blocked_now": "Not exposed now: the site refuses or no longer has the file "
-                   "(HTTP {status}). It was served when the client downloaded it.",
-    "redirected": "Redirected (HTTP {status}): the file is not served at this URL now.",
+    "blocked_now": "Not readable from the SOC: the site answers HTTP {status} for this "
+                   "URL now. The client's download was not reproduced.",
+    "redirected": "Redirected (HTTP {status}): the site does not serve this URL to the "
+                  "SOC now. The client's download was not reproduced.",
     "unreachable": "Could not reach the site from the SOC host: {detail}.",
     "refused": "Not checked: {detail}.",
 }
@@ -487,6 +487,14 @@ def verify(domain: str | None, root: str, kind: str, *,
     fetcher of arbitrary addresses. Redirects are not followed, at most 2 KB is
     read, and the content itself is never returned — only its verdict, the
     signature name, and a SHA-256 so a later check can tell if it changed.
+
+    https is asked first; http only when https did not answer 2xx, since an
+    http-only vhost's :443 is the default TLS site's 404 or a canonical
+    redirect. The first 2xx decides (confirmed, likely, not_reproducible);
+    when neither scheme has the file the https answer stands: a 3xx is
+    "redirected", a 4xx "blocked_now", and a 5xx — the site failing, not
+    refusing — "unreachable", no evidence either way. ``tried`` lists the
+    URLs asked, in order.
     """
     checked = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     base = {"checked_at": checked, "domain": domain, "root": root, "kind": kind}
@@ -502,8 +510,11 @@ def verify(domain: str | None, root: str, kind: str, *,
     opener = opener or urllib.request.build_opener(
         _NoRedirect, urllib.request.HTTPSHandler(context=_insecure_context()))
     last_error = "no response"
+    tried: list[str] = []
+    without_file: dict[str, Any] | None = None  # the first non-2xx answer, https first
     for scheme in ("https", "http"):
         url = f"{scheme}://{domain}{probe}"
+        tried.append(url)
         req = urllib.request.Request(url, headers={
             "Range": f"bytes=0-{_READ_BYTES - 1}",
             "User-Agent": "tlsoc-ml-exposure-verifier/1.0",
@@ -514,17 +525,23 @@ def verify(domain: str | None, root: str, kind: str, *,
                 ctype = resp.headers.get("Content-Type", "")
                 body = resp.read(_READ_BYTES)
         except urllib.error.HTTPError as exc:
-            status, ctype, body = exc.code, exc.headers.get("Content-Type", "") if exc.headers else "", b""
-        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ssl.SSLError) as exc:
+            status, body = exc.code, b""
+            ctype = exc.headers.get("Content-Type", "") if exc.headers else ""
+        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
             last_error = str(getattr(exc, "reason", exc))[:160]
             continue
         out = {**base, "url": url, "status": status, "content_type": ctype[:80],
                "bytes_read": len(body),
                "sha256": hashlib.sha256(body).hexdigest() if body else None}
-        if 300 <= status < 400:
-            verdict = "redirected"
+        detail = ""
+        if status >= 500:
+            # The site's own failure says nothing about the file.
+            verdict = "unreachable"
+            out["detail"] = detail = f"HTTP {status}"
         elif status >= 400:
             verdict = "blocked_now"
+        elif status >= 300:
+            verdict = "redirected"
         else:
             sig = _signature(kind, root, body)
             if sig:
@@ -537,9 +554,16 @@ def verify(domain: str | None, root: str, kind: str, *,
         out["verdict"] = verdict
         out["summary"] = VERIFY_VERDICTS[verdict].format(
             kind=KINDS[kind].title.lower() if kind in KINDS else kind, status=status,
-            detail="")
-        return out
-    return {**base, "verdict": "unreachable", "detail": last_error,
+            detail=detail)
+        if status < 300:
+            return {**out, "tried": tried}
+        # Not the file on this scheme: an http-only vhost answers on :443
+        # with the default TLS site's 404 or a canonical redirect (D-044
+        # withheld on it). Ask the other scheme before settling.
+        without_file = without_file or out
+    if without_file is not None:
+        return {**without_file, "tried": tried}
+    return {**base, "verdict": "unreachable", "detail": last_error, "tried": tried,
             "summary": VERIFY_VERDICTS["unreachable"].format(detail=last_error)}
 
 

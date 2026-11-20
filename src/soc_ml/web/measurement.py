@@ -130,6 +130,9 @@ class MeasurementBook:
             "consequence": dict(spec["consequence"]) if isinstance(
                 spec.get("consequence"), dict) else {},
             "scored": "exposure alert" in definitions,
+            # M-003d: "nothing stands in for" the analyst's verdict — the
+            # verifier is the gate's own instrument from D-044 on.
+            "stand_in": "nothing stands in" not in record,
             "verdict": verdict,
         }
 
@@ -225,7 +228,9 @@ class MeasurementBook:
             alert_id = str(doc["alert"]["id"])
             keys = [str(e.get("key")) for e in doc.get("exposure") or [] if e.get("key")]
             verdicts = {k: (latest(k) or {}).get("verdict") for k in keys}
-            if any(v == "confirmed" for v in verdicts.values()):
+            if not spec["stand_in"]:
+                stand_in = None
+            elif any(v == "confirmed" for v in verdicts.values()):
                 stand_in = "true_positive"
             elif keys and all(v == "not_reproducible" for v in verdicts.values()):
                 stand_in = "false_positive"
@@ -250,7 +255,9 @@ class MeasurementBook:
                      if inside(_parse_ts(r.get("@timestamp")))]
         withheld: dict[str, dict[str, Any]] = {}
         for r in downloads:
-            if r.get("verdict") != "not_reproducible" or r.get("new"):
+            # A checked download that opened no alert: a page (D-042), a 4xx or
+            # a redirect (D-044) at its URL. The verdict says which.
+            if not r.get("verdict") or r.get("new"):
                 continue
             w = withheld.setdefault(str(r.get("key")), {
                 "key": r.get("key"), "kind": r.get("kind"), "first": r.get("@timestamp"),
@@ -288,7 +295,8 @@ class MeasurementBook:
             "pre_checks": {v: sum(r.get("verdict") == v for r in pre_checks)
                            for v in sorted({str(r.get("verdict")) for r in pre_checks})},
             "results": {
-                "H1": self._h1(alerts, final and (deadline is None or now >= deadline)),
+                "H1": self._h1(alerts, final and (deadline is None or now >= deadline),
+                               stand_in=spec["stand_in"]),
                 "H2": self._h2(per_day, final, spec["hypotheses"].get("H2", "")),
                 "H3": self._h3(spec, final),
                 "H4": {"state": ("fail" if restarts or tracebacks else
@@ -303,26 +311,41 @@ class MeasurementBook:
         }
 
     @staticmethod
-    def _h1(alerts: list[dict], final: bool) -> dict[str, Any]:
+    def _h1(alerts: list[dict], final: bool, *, stand_in: bool = True) -> dict[str, Any]:
+        """M-003c's rule (the verifier stands in; at most 2 untriaged) or
+        M-003d's (analyst verdicts only; one unjudged at the deadline makes
+        H1 not testable, never a pass)."""
         judged = [a for a in alerts if a["of_record"]]
         right = sum(a["of_record"] in ("true_positive", "benign") for a in judged)
         untriaged = len(alerts) - len(judged)
         share = right / len(judged) if judged else None
-        ok = share is not None and share >= 0.8 and untriaged <= 2
+        if stand_in:
+            ok = share is not None and share >= 0.8 and untriaged <= 2
+        else:
+            # Until the deadline the analyst still has time: judge the share.
+            ok = share is None or share >= 0.8
         if not alerts:
             state = "not_testable" if final else "waiting"
+        elif final and not stand_in and untriaged:
+            state = "not_testable"
         elif ok:
             state = "pass" if final else "on_track"
         else:
             state = "fail" if final else "off_track"
+        if judged:
+            figure = f"{right}/{len(judged)} correct ({share:.0%}), {untriaged} untriaged"
+        else:
+            figure = f"{len(alerts)} alerts, none with a verdict"
+        if not stand_in and untriaged:
+            figure += " — every alert needs the analyst's verdict by the deadline"
         return {
             "state": state, "alerts": len(alerts), "correct": right, "judged": len(judged),
             "untriaged": untriaged, "share": round(share, 3) if share is not None else None,
             "by_analyst": sum(not a["filled_in"] and a["of_record"] is not None
                               for a in alerts),
             "filled_in": sum(a["filled_in"] for a in alerts),
-            "figure": (f"{right}/{len(judged)} correct ({share:.0%}), {untriaged} untriaged"
-                       if judged else f"{len(alerts)} alerts, none with a verdict"),
+            "stand_in": stand_in,
+            "figure": figure,
         }
 
     @staticmethod

@@ -282,14 +282,37 @@ def test_a_confirmed_exposure_is_delivered_with_its_verdict(tmp_path: Path) -> N
     assert row["alert_id"] == doc["alert"]["id"], "the console will not check it again"
 
 
-@pytest.mark.parametrize("verdict", ["likely", "blocked_now", "redirected", "unreachable",
-                                     "refused", "raises"])
-def test_only_an_ordinary_page_withholds_an_exposure(tmp_path: Path, verdict: str) -> None:
-    """A 404 now may be the fix after the download; a failed check is no
-    evidence. Either way the download happened: it is alerted."""
+@pytest.mark.parametrize("verdict", ["likely", "unreachable", "refused", "raises"])
+def test_a_check_that_is_no_evidence_does_not_withhold(tmp_path: Path, verdict: str) -> None:
+    """A site the SOC cannot reach, a refusal to fetch, a check that raised,
+    or content that is not HTML but matched no signature: the download
+    happened and nothing says otherwise. It is alerted."""
     check, _ = _verifier({"/.env": verdict})
     _run(tmp_path, [_ev("/.env", size=913)], exposure_verify=check)
     assert len(_rows(tmp_path / "alerts" / "web_recon.ndjson")) == 1
+
+
+@pytest.mark.parametrize("verdict", ["blocked_now", "redirected"])
+def test_a_file_the_soc_cannot_read_is_not_an_exposure_alert(tmp_path: Path,
+                                                             verdict: str) -> None:
+    """prod, 18-19 Nov: a scanner with a crawler's user-agent got HTTP 200 and
+    exactly 2,102 bytes for /.env.production and, a day later, /.env.save on
+    one site; its other probes got the site's 970-byte page. A browser got
+    404 for the same path, and the check got 404 four and six minutes after
+    each download. Both went out as critical, "blocked now" (D-042 delivered
+    a 4xx now as "the fix after the download"; no such case was ever
+    recorded). An exposure alert claims what the SOC itself read (D-044)."""
+    check, calls = _verifier({"/.env.production": verdict})
+    rt = _run(tmp_path, [_ev("/.env.production", size=2102)], exposure_verify=check)
+    assert _rows(tmp_path / "alerts" / "web_recon.ndjson") == []
+    assert calls == ["/.env.production"]
+    [row] = _rows(tmp_path / "state" / "web_recon_exposures.ndjson")
+    assert row["new"] is False and row["verdict"] == verdict, "recorded, with the reason"
+    [chk] = _rows(tmp_path / "state" / "web_recon_verifications.ndjson")
+    assert chk["alert_id"] is None, "no alert for the SIEM shipper to update"
+    digest = _rows(tmp_path / "state" / "web_recon_digest.ndjson")
+    assert any("not reproducible from the SOC" in d["reason"] for d in digest)
+    assert rt.runners[0].stats["exposures_not_reproducible"] == 1
 
 
 def test_a_status_page_is_alerted_although_it_is_html(tmp_path: Path) -> None:
@@ -321,6 +344,21 @@ def test_a_withheld_page_does_not_set_the_severity_of_the_alert_it_rides_in(
     assert {e["key"]: e["new"] for e in doc["exposure"]} == {
         f"{SITE}|/.htaccess": True, f"{SITE}|/beta/.env": False}
     assert doc["alert"]["severity"] == "medium", "a web.config-class exposure, not a secret"
+
+
+def test_the_alert_is_headlined_by_an_exposure_the_soc_could_read(tmp_path: Path) -> None:
+    """The document's url.full and the console's title are the first exposure
+    in the alert. With the withheld one first in event order, the alert was
+    headlined by the URL the SOC could not read."""
+    check, _ = _verifier({"/beta/.env": "not_reproducible"})
+    _run(tmp_path, [_ev("/beta/.env", size=4103), _ev("/.htaccess", size=8024, seconds=1)],
+         exposure_verify=check)
+    [doc] = _rows(tmp_path / "alerts" / "web_recon.ndjson")
+    assert doc["url"]["path"] == "/.htaccess"
+    assert doc["url"]["full"] == f"https://{SITE}/.htaccess"
+    assert [(e["root"], e["new"]) for e in doc["exposure"]] == [
+        ("/.htaccess", True), ("/beta/.env", False)]
+    assert doc["alert"]["severity"] == "medium"
 
 
 def test_a_crawler_down_weight_does_not_lower_an_exposure() -> None:
@@ -377,19 +415,26 @@ class _Resp(io.BytesIO):
 
 
 class _Opener:
-    def __init__(self, result):
-        self.result = result
+    """Answers each request with the next of ``results``; the last one repeats."""
+
+    def __init__(self, *results):
+        self.results = list(results)
         self.urls: list[str] = []
 
     def open(self, req, timeout):
         self.urls.append(req.full_url)
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result
+        result = self.results.pop(0) if len(self.results) > 1 else self.results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
-def _verify(kind: str, root: str, result) -> tuple[dict, list[str]]:
-    opener = _Opener(result)
+def _http_error(status: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(f"https://{SITE}/.env", status, "", Message(), None)
+
+
+def _verify(kind: str, root: str, *results) -> tuple[dict, list[str]]:
+    opener = _Opener(*results)
     out = verify(SITE, root, kind, allowed_domains=("example.edu",), opener=opener)
     return out, opener.urls
 
@@ -401,8 +446,9 @@ def test_verification_confirms_by_content_signature() -> None:
     out, _ = _verify("server_config", "/web.config",
                      _Resp(b'<?xml version="1.0"?>\n<configuration>\n'))
     assert out["verdict"] == "confirmed"
-    out, _ = _verify("secrets", "/.env", _Resp(b"APP_KEY=base64:abc\nDB_PASSWORD=x\n"))
+    out, urls = _verify("secrets", "/.env", _Resp(b"APP_KEY=base64:abc\nDB_PASSWORD=x\n"))
     assert out["verdict"] == "confirmed" and "content" not in out and "body" not in out
+    assert out["tried"] == urls == [f"https://{SITE}/.env"], "https answered: http not asked"
 
 
 def test_an_html_answer_is_not_reproducible() -> None:
@@ -416,6 +462,36 @@ def test_a_refusal_now_is_reported_as_blocked() -> None:
     out, _ = _verify("secrets", "/.env",
                      urllib.error.HTTPError(f"https://{SITE}/.env", 403, "Forbidden", hdrs, None))
     assert out["verdict"] == "blocked_now" and out["status"] == 403
+
+
+def test_an_http_only_site_is_asked_on_http_when_https_has_no_file() -> None:
+    """An http-only vhost: its :443 is the default TLS site's 404 or a
+    canonical redirect. The check returned on that answer and never asked
+    http, and since D-044 that withheld the file served on :80."""
+    both = [f"https://{SITE}/.env", f"http://{SITE}/.env"]
+    out, urls = _verify("secrets", "/.env", _http_error(301), _Resp(b"DB_PASSWORD=x\n"))
+    assert out["verdict"] == "confirmed" and out["status"] == 206
+    assert out["tried"] == urls == both
+    out, urls = _verify("secrets", "/.env", _http_error(404), _http_error(404))
+    assert out["verdict"] == "blocked_now" and out["status"] == 404
+    assert out["tried"] == urls == both
+
+
+@pytest.mark.parametrize("https, http, verdict, status", [
+    (503, 503, "unreachable", 503),
+    (503, 404, "unreachable", 503),
+    (404, 503, "blocked_now", 404),
+])
+def test_a_server_error_is_no_evidence_either_way(https: int, http: int, verdict: str,
+                                                  status: int) -> None:
+    """A 5xx is the site failing, not the site refusing: it was reported as
+    "blocked now" and, since D-044, withheld the alert, although every
+    record says "a 4xx". When neither scheme serves the file the https
+    answer stands."""
+    out, urls = _verify("secrets", "/.env", _http_error(https), _http_error(http))
+    assert out["verdict"] == verdict and out["status"] == status and len(urls) == 2
+    if verdict == "unreachable":
+        assert out["detail"] == "HTTP 503" and out["summary"].endswith("HTTP 503.")
 
 
 def test_a_forged_host_is_never_contacted() -> None:

@@ -133,6 +133,29 @@ informational: exposure alerts per day by kind and severity; checks made
   command, resumed from the checkpoint, same bundles, no watchdog line. The
   commit under measurement is 19805b3; the window still opens 2026-11-17
   00:00 IST.
+- **2026-11-21 03:00 IST, mid-window read; nothing changed on prod.** Day 5
+  of 7: 7 exposure alerts (1 / 2 / 4 / 0 / 0), 5 confirmed by the check
+  before delivery, 2 critical `.env` alerts on one site checked
+  `blocked_now` (HTTP 404 to the runtime four and six minutes after each
+  download; the downloader, a scanner with a crawler's user-agent, got 2,102
+  bytes for both names, a browser got 404 for the same path). Both are
+  untriaged — exactly H1's limit: by the letter, unjudged at 26 Nov 00:00
+  IST they leave H1 at 5 of 5 with 2 untriaged, a pass; judged false
+  positives by the analyst, H1 ends at 5 of 7, a fail.
+  3 withheld (all `not_reproducible`), H2 one day over (4 on 19 Nov), H4
+  clean. The window runs to its end as written. The log server's three
+  finished rotations covering 15 Nov 11:26 → 20 Nov 20:40 UTC were copied to
+  `data/corpus/m003c/` and checksummed (the fourth and the current file
+  follow after the window); an early `check_exposures.py` pass over them is
+  informational only. H5's reading of the three withheld exposures so far
+  (`scripts/classify_withheld.py` over the same files): the first is (a),
+  its 9,860 bytes also served for `/` and 13 other paths; the two
+  `/search/.env` ones are (d), the only requests under `/search/` on their
+  sites all week, to be fetched in full at the verdict. The fix for the two
+  alerts (D-044: a download the SOC
+  cannot reproduce — a page, a 4xx or a redirect now — is withheld, not
+  alerted) is built and tested offline and deploys after the window closes,
+  24 Nov 00:00 IST; M-003d measures it.
 
 ## Verdict
 

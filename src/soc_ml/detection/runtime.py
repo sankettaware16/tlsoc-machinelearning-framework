@@ -86,11 +86,19 @@ _HTML_BY_NATURE = frozenset({"debug"})
 #: Fetches per alert before the rest deliver unchecked: a check can take 16 s
 #: (two schemes, 8 s each) and the runtime waits for it.
 _MAX_CHECKS_PER_ALERT = 4
-#: A key found to be the site's page is not fetched again for this long; its
-#: later downloads are recorded under that verdict. Delivery horizon, like
-#: REALERT_AFTER, not a data threshold.
+#: A key the SOC could not read — a page, a 4xx or a redirect — is not fetched
+#: again for this long: each later download that day is withheld without a
+#: fetch and its record stamped with the day-old verdict. Delivery horizon,
+#: like REALERT_AFTER, not a data threshold.
 _RECHECK_UNREPRODUCIBLE = timedelta(days=1)
 _MAX_UNREPRODUCIBLE_KEYS = 10_000
+#: Check verdicts that withhold a new exposure: the SOC asked the site for the
+#: file and got a page, a 4xx or a redirect, not the file. prod, 18-19 Nov: a
+#: scanner got 2,102 bytes for two different .env names on one site; a browser
+#: and the check got 404 minutes later, and both went out as critical (D-044).
+#: unreachable (no answer, or a 5xx), refused and a check that raised are no
+#: evidence: they deliver.
+_WITHHOLDING_VERDICTS = frozenset({"not_reproducible", "blocked_now", "redirected"})
 
 
 def resolve_timezone(name: str | None) -> tzinfo:
@@ -206,7 +214,10 @@ class _UseCaseRunner:
         self.progression = Progression(tz=tz) if uc_cls.progressive else None
         self.exposures = ExposureTracker()
         self.exposures_fh = None
-        #: key -> (checked at, verification) for exposures found to be a page.
+        #: key -> (checked at, verification) for a key the SOC could not read:
+        #: a page, a 4xx or a redirect (_WITHHOLDING_VERDICTS). Not fetched
+        #: again for _RECHECK_UNREPRODUCIBLE; every later download that day
+        #: is withheld and recorded under this verdict.
         self.unreproducible: dict[str, tuple[datetime, dict]] = {}
         self.budget = AlertBudget(
             daily_budget_override
@@ -581,7 +592,8 @@ class DetectionRuntime:
         Not capped by the daily budget: an exposure is rare and is the alert
         the budget exists to protect (D-034). A kind that is not alert-worthy
         (development metadata) is recorded and digested, and so is a new
-        exposure whose URL is an ordinary web page when fetched (D-042).
+        exposure the SOC could not read itself when it fetched it: an ordinary
+        web page (D-042), a 4xx or a redirect (D-044).
         """
         exposures = alert.links.get("exposures") or []
         new: list[str] = []
@@ -593,8 +605,8 @@ class DetectionRuntime:
                 exp["new"] = False
                 continue
             if not runner.exposures.is_open(exp["key"], alert.timestamp):
-                held, fetched = self._is_a_page(runner, alert, exp,
-                                                may_fetch=fetches < _MAX_CHECKS_PER_ALERT)
+                held, fetched = self._not_reproducible(
+                    runner, alert, exp, may_fetch=fetches < _MAX_CHECKS_PER_ALERT)
                 fetches += fetched
                 if held:
                     exp["new"] = False
@@ -618,6 +630,11 @@ class DetectionRuntime:
             if withheld:
                 # A page is not what was exposed: severity from the rest.
                 set_exposure_severity(alert, [e for e in exposures if e["key"] not in withheld])
+            # The sink's url.full and the console's title are exposures[0]:
+            # headline the alert by a file the SOC read, not one it was
+            # withheld on. Same list as alert.links["exposures"]; the records
+            # above were written in event order.
+            exposures.sort(key=lambda e: not e.get("new"))
             runner.sink.emit_alert(alert)
             runner.stats["alerts_delivered"] += 1
             runner.stats["exposure_alerts"] += 1
@@ -630,8 +647,9 @@ class DetectionRuntime:
             return "folded", {**detail, "folded_by": "exposure", "folded_into": into,
                               "into_finding": True}
         if withheld:
-            self._digest(runner, alert, reason="exposure not reproducible: the URL is an "
-                                               "ordinary web page now — recorded only")
+            self._digest(runner, alert, reason="exposure not reproducible from the SOC: the "
+                                               "URL is a page, a 4xx or a redirect now — "
+                                               "recorded only")
             runner.stats["alerts_digested"] += 1
             self.stats["alerts_digested"] += 1
             return "digested", {**detail, "digest_reason": "exposure_not_reproducible"}
@@ -640,18 +658,20 @@ class DetectionRuntime:
         self.stats["alerts_digested"] += 1
         return "digested", {**detail, "digest_reason": "exposure_low"}
 
-    def _is_a_page(self, runner: _UseCaseRunner, alert, exp: dict, *,
-                   may_fetch: bool) -> tuple[bool, bool]:
-        """(withhold, fetched): is this new exposure the site's page, by its content?
+    def _not_reproducible(self, runner: _UseCaseRunner, alert, exp: dict, *,
+                          may_fetch: bool) -> tuple[bool, bool]:
+        """(withhold, fetched): can the SOC read this new exposure itself?
 
         The size rules see only what the log shows. A page that differs per
         path without echoing it in proportion (a search route printing the
         term, a second app's shell under ``/beta/``) passes them: prod, 7-14
         Nov, two of seven exposure alerts, each found to be a page by the
-        console's verifier two minutes after delivery (M-003b). The same
-        check runs here first. Only "an ordinary web page now" withholds;
-        a failed check, a refusal, a 404 now, or a kind whose real content
-        is HTML delivers as before.
+        console's verifier two minutes after delivery (M-003b). So does an
+        answer the site gives one client only: prod, 18-19 Nov, 2,102 bytes
+        to a scanner for two .env names, 404 to everyone else (M-003c). The
+        check runs here first, and an exposure alert claims only what the
+        SOC read: a page, a 4xx or a redirect now withholds. A failed check,
+        a refusal, or a kind whose real content is HTML delivers as before.
         """
         verify = self.cfg.exposure_verify
         if verify is None or exp["kind"] in _HTML_BY_NATURE:
@@ -666,17 +686,17 @@ class DetectionRuntime:
             result = verify(exp.get("domain"), exp["root"], exp["kind"])
         except Exception as exc:  # a broken check must never withhold an alert
             result = {"verdict": "unreachable", "detail": f"{type(exc).__name__}: {exc}"}
-        page = result.get("verdict") == "not_reproducible"
+        held = result.get("verdict") in _WITHHOLDING_VERDICTS
         # The console reads this file and does not check a key twice. A
         # withheld exposure has no alert for the SIEM to update: its trail is
         # the download record, which carries the verdict.
         path = self.state_dir / f"{runner.slug}_verifications.ndjson"
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"alert_id": None if page else alert.id, "key": exp["key"],
+            fh.write(json.dumps({"alert_id": None if held else alert.id, "key": exp["key"],
                                  **result, "by": "runtime"}) + "\n")
         exp["verification"] = {k: result[k] for k in
                                ("verdict", "checked_at", "signature", "summary") if result.get(k)}
-        if not page:
+        if not held:
             return False, True
         if len(runner.unreproducible) >= _MAX_UNREPRODUCIBLE_KEYS:
             del runner.unreproducible[next(iter(runner.unreproducible))]

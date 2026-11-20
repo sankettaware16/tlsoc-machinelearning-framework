@@ -211,10 +211,17 @@ sharing**, which `web_recon` (a single self-contained detector) did not need.
 - [ ] **First production use case — sensitive-file exposure alerts (D-040).**
       Deployed 2026-11-02. Offline on 29 Oct - 2 Nov: 7 exposures (1.6/day),
       6 confirmed by content. M-003 (3-10 Nov) voided on 6 Nov: two of its
-      eight alerts were pages that echo the path (D-041, fixed). Acceptance
-      run M-003b, 7-14 Nov (docs/measurements/M-003b-exposure-alerts-7d.md);
-      analyst console with verification and triage; SIEM shipper live since
-      3 Nov; `scripts/check_exposures.py` replays the rule offline (H3)
+      eight alerts were pages that echo the path (D-041, fixed). M-003b,
+      7-14 Nov: H1 and H3 failed — two pages no size rule can see (D-042,
+      the content check before delivery) and a size memory that forgot a
+      busy site's home page (D-043). M-003c, 17-24 Nov, on D-042/D-043:
+      mid-window, two critical alerts on an answer a site gave one scanner
+      only (D-044, built 21 Nov, deploys when the window closes); M-003d,
+      25 Nov - 2 Dec, measures it and needs the analyst's verdicts.
+      Analyst console with verification, triage and a live measurement
+      view; SIEM shipper live since 3 Nov; `scripts/check_exposures.py`
+      replays the rule offline (H3), `scripts/classify_withheld.py` reads
+      what was withheld (H5)
 - [ ] bot_detection retrain is blocked until its label/features can represent
       a headless browser (D-032)
 
