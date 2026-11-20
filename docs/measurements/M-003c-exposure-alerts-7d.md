@@ -147,7 +147,10 @@ informational: exposure alerts per day by kind and severity; checks made
   finished rotations covering 15 Nov 11:26 → 20 Nov 20:40 UTC were copied to
   `data/corpus/m003c/` and checksummed (the fourth and the current file
   follow after the window); an early `check_exposures.py` pass over them is
-  informational only. H5's reading of the three withheld exposures so far
+  informational only: 16,458,174 events to 20 Nov 20:40 UTC, 8 offline
+  deliveries (the 5 delivered, the 3 withheld), 78 folds, 0 never recorded
+  live, 0 live keys the rule does not find. H5's reading of the three
+  withheld exposures so far
   (`scripts/classify_withheld.py` over the same files): the first is (a),
   its 9,860 bytes also served for `/` and 13 other paths; the two
   `/search/.env` ones are (d), the only requests under `/search/` on their
