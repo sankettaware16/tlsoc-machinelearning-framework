@@ -159,6 +159,28 @@ informational: exposure alerts per day by kind and severity; checks made
   cannot reproduce — a page, a 4xx or a redirect now — is withheld, not
   alerted) is built and tested offline and deploys after the window closes,
   24 Nov 00:00 IST; M-003d measures it.
+- **2026-11-24, after the window: H2-H5 read; H1 waits for the analyst
+  deadline (26 Nov 00:00 IST).** The window holds 8 exposure alerts
+  (1 / 2 / 4 / 0 / 0 / 0 / 1): the eighth, at 23:50 IST on 23 Nov, is a
+  debug-kind re-alert (a server-status page alerted before the window,
+  re-alerted after seven days), not checked before delivery by rule and
+  confirmed by the console's verifier afterwards. The console reads H1 at
+  6 of 6 correct with 2 untriaged (the two `blocked_now` alerts), H2 pass
+  (6 of 7 days at 3 or fewer), H4 pass (0 restarts, 0 tracebacks).
+  H3: the log server's six files for the window (three more copied at
+  00:02-00:04 IST, the live file snapshotted past 24 Nov 00:00 IST,
+  checksummed both ends) replayed by `scripts/check_exposures.py`, unchanged
+  since 19805b3: 27,537,318 events, 10 offline deliveries, 90 folds,
+  **0 exposures never recorded live, 0 live keys the rule does not find**.
+  H5: `scripts/classify_withheld.py` over the same files puts the three
+  withheld exposures in (a), (a) and (d). The first `.env` shares its
+  9,860 bytes with `/` and 20 other paths. The first `/search/.env` shares its
+  34,149 bytes with an ordinary page, which was served later in the week. The
+  (d), the second `/search/.env`, was fetched in full (64 KB) at 01:30 IST
+  by the SOC's verifier: HTTP 200 HTML, the site's search results page for
+  the term ".env", no `KEY=value` line. It is a page, not the file its kind
+  names. **Every withheld exposure is a page.** Run on prod with 8dc1477
+  deployed (D-044 changes neither script).
 
 ## Verdict
 
