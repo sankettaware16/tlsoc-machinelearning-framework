@@ -172,7 +172,12 @@ informational: exposure alerts per day by kind and severity; checks made
 
 *Recorded as they happen, before the window closes.*
 
-- *(none yet)*
+- **2026-11-24 00:01 IST, before the window: build 8dc1477 deployed** (D-044;
+  the commit after c3d6dd7 changes only a measurement doc). `deploy/rollout.sh`
+  stopped the runtime at minute%5==1 with TERM (clean drain, 14 s), started it
+  with the launch command, resumed from the checkpoint, same bundles
+  (web_recon v20261012T132802, bot_detection v20261007T162845), no watchdog
+  line, exit 0. The window therefore opens 2026-11-25 00:00 IST.
 
 ## Verdict
 
